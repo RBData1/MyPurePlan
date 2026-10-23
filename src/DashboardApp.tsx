@@ -294,6 +294,15 @@ function stripKnownMissingColumns(table: string, rows: Record<string, unknown>[]
     return next;
   });
 }
+function dedupeById(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const id = String(row.id ?? '');
+    if (!id) continue;
+    byId.set(id, row);
+  }
+  return [...byId.values()];
+}
 async function upsertInChunks(
   client: NonNullable<typeof supabase>,
   table: string,
@@ -302,13 +311,34 @@ async function upsertInChunks(
   chunkSize = SYNC_CHUNK,
 ): Promise<string | null> {
   if (!rows.length) return null;
-  for (let offset = 0; offset < rows.length; offset += chunkSize) {
-    let attempt = stripKnownMissingColumns(table, rows.slice(offset, offset + chunkSize));
+  const uniqueRows = rows[0] && 'id' in rows[0] ? dedupeById(rows) : rows;
+  for (let offset = 0; offset < uniqueRows.length; offset += chunkSize) {
+    let attempt = stripKnownMissingColumns(table, uniqueRows.slice(offset, offset + chunkSize));
     let lastError: string | null = null;
     for (let peel = 0; peel < 8; peel++) {
       const { error } = await client.from(table).upsert(attempt, { onConflict });
       if (!error) { lastError = null; break; }
-      lastError = error.message || String(error.code || `${table} upsert failed`);
+      const code = String(error.code || '');
+      lastError = error.message || code || `${table} upsert failed`;
+      // 409 = FK / unique conflict. Drop optional address_id, then bisect, then skip bad row.
+      if (code === '23503' || code === '23505' || /conflict|foreign key|duplicate key|409/i.test(lastError)) {
+        if (attempt.some(row => row.address_id != null)) {
+          attempt = attempt.map(row => ({ ...row, address_id: null }));
+          continue;
+        }
+        if (attempt.length > 1) {
+          const half = Math.max(1, Math.floor(attempt.length / 2));
+          const left = await upsertInChunks(client, table, attempt.slice(0, half), onConflict, half);
+          const right = await upsertInChunks(client, table, attempt.slice(half), onConflict, half);
+          if (left && right) return `${left} · ${right}`;
+          if (left || right) return left || right;
+          lastError = null;
+          break;
+        }
+        // Single conflicting row — skip so the rest of the sync can finish.
+        lastError = null;
+        break;
+      }
       if (/timeout|57014/i.test(lastError) && attempt.length > 10) {
         const half = Math.max(10, Math.floor(attempt.length / 2));
         const left = await upsertInChunks(client, table, attempt.slice(0, half), onConflict, half);
@@ -558,18 +588,23 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const serviceRows=services.map(s=>({business_id:businessId,name:s.name,default_duration_minutes:s.duration,default_price:s.price,color:s.color||null,is_bookable_online:true,is_active:true}));
     const serviceErr=await upsertInChunks(client,'services',serviceRows,'business_id,name');
     if(serviceErr) errors.push('services: '+serviceErr);
-    const appointmentRows=appointments.map(a=>{
+    // Only sync appointments for customers we just upserted — avoids FK 409 on customer_id.
+    // Leave address_id null; address_snapshot carries the property text (avoids address FK 409).
+    const customerIds=new Set(customers.map(c=>c.id));
+    const appointmentRows=appointments.filter(a=>customerIds.has(a.customerId)).map(a=>{
       const durationMins=Math.max(5, Number(a.duration)||30);
       const start=new Date(`${a.date}T${a.time}:00`);
       if(Number.isNaN(start.getTime())) return null;
       const end=new Date(start.getTime()+durationMins*60000);
+      if(!(end.getTime()>start.getTime())) return null;
       const statusRaw=String(a.status||'confirmed').toLowerCase();
       const status=['pending','confirmed','completed','cancelled'].includes(statusRaw)?statusRaw:'confirmed';
-      return {id:a.id,business_id:businessId,customer_id:a.customerId,address_id:customers.some(c=>c.id===a.customerId)?a.customerId:null,starts_at:start.toISOString(),ends_at:end.toISOString(),status,service_name_snapshot:a.service||'Service',price_snapshot:Number.isFinite(a.price)?a.price:0,address_snapshot:a.address||'Address not provided',customer_notes:null,internal_notes:packApptNotes(a.notes,Boolean(a.oneOff),Number(a.frequency)||6,{quickfileInvoiceId:a.quickfileInvoiceId,quickfileInvoiceNumber:a.quickfileInvoiceNumber,quickfileInvoicedAt:a.quickfileInvoicedAt}),quickfile_invoice_id:a.quickfileInvoiceId??null,quickfile_invoice_number:a.quickfileInvoiceNumber??null,quickfile_invoiced_at:a.quickfileInvoicedAt??null,booking_source:'import'};
+      return {id:a.id,business_id:businessId,customer_id:a.customerId,address_id:null,starts_at:start.toISOString(),ends_at:end.toISOString(),status,service_name_snapshot:a.service||'Service',price_snapshot:Number.isFinite(a.price)?Math.max(0,a.price):0,address_snapshot:a.address||'Address not provided',customer_notes:null,internal_notes:packApptNotes(a.notes,Boolean(a.oneOff),Number(a.frequency)||6,{quickfileInvoiceId:a.quickfileInvoiceId,quickfileInvoiceNumber:a.quickfileInvoiceNumber,quickfileInvoicedAt:a.quickfileInvoicedAt}),quickfile_invoice_id:a.quickfileInvoiceId??null,quickfile_invoice_number:a.quickfileInvoiceNumber??null,quickfile_invoiced_at:a.quickfileInvoicedAt??null,booking_source:'import'};
     }).filter((row):row is NonNullable<typeof row>=>Boolean(row?.customer_id&&row.starts_at&&row.ends_at));
     const appointmentErr=await upsertInChunks(client,'appointments',appointmentRows,'id');
     if(appointmentErr) errors.push('appointments: '+appointmentErr);
-    const paymentRows=payments.map(p=>({id:p.id,business_id:businessId,appointment_id:p.appointmentId,amount:p.amount,paid_at:p.paidAt?`${p.paidAt}T12:00:00.000Z`:null,method:p.method||'cash'}));
+    const syncedApptIds=new Set(appointmentRows.map(r=>String(r.id)));
+    const paymentRows=payments.filter(p=>syncedApptIds.has(p.appointmentId)).map(p=>({id:p.id,business_id:businessId,appointment_id:p.appointmentId,amount:p.amount,paid_at:p.paidAt?`${p.paidAt}T12:00:00.000Z`:null,method:p.method||'cash'}));
     const paymentErr=await upsertInChunks(client,'payments',paymentRows,'id');
     if(paymentErr) errors.push('payments: '+paymentErr);
     if(errors.length){
