@@ -1,4 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getCACertificates, setDefaultCACertificates } from 'node:tls';
+
+/** Avast/antivirus HTTPS scanning uses a local root that browsers trust via Windows, but Node's bundled CAs do not. */
+function trustSystemCertificates() {
+  const merged = [...getCACertificates('default'), ...getCACertificates('system')];
+  if (merged.length) setDefaultCACertificates(merged);
+}
+
+let systemCasApplied = false;
+function ensureSystemCertificates() {
+  if (systemCasApplied) return;
+  systemCasApplied = true;
+  try {
+    trustSystemCertificates();
+  } catch {
+    systemCasApplied = false;
+  }
+}
 
 export type QuickFileCredentials = {
   accNumber: string;
@@ -117,11 +135,23 @@ async function quickfilePost<T = any>(methodPath: string, creds: QuickFileCreden
       Body: body,
     },
   };
-  const res = await fetch(`https://api.quickfile.co.uk/1_2/${methodPath}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  ensureSystemCertificates();
+  let res: Response;
+  try {
+    res = await fetch(`https://api.quickfile.co.uk/1_2/${methodPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : '';
+    const intercepted = /certificate|UNABLE_TO_VERIFY/i.test(cause);
+    throw new Error(
+      intercepted
+        ? `Could not reach QuickFile because HTTPS is being intercepted (${cause}). Turn off HTTPS scanning in Avast Web Shield, then connect again.`
+        : `Could not reach QuickFile${cause ? `: ${cause}` : '.'}`,
+    );
+  }
   const text = await res.text();
   let json: any = null;
   try {
@@ -131,9 +161,17 @@ async function quickfilePost<T = any>(methodPath: string, creds: QuickFileCreden
   }
   const errors = collectQuickFileErrors(json);
   if (!res.ok || errors.length) {
-    throw new Error(errors.join(' · ') || json?.error || `QuickFile HTTP ${res.status}`);
+    const message = explainQuickFileError(errors.join(' · ') || json?.error || `QuickFile HTTP ${res.status}`);
+    console.error('[quickfile]', methodPath, res.status, message);
+    throw new Error(message);
   }
-  return (json?.payload ?? json) as T;
+  const root = json?.payload ?? json;
+  if (root && typeof root === 'object' && !Array.isArray(root) && !root.Header && !root.Body) {
+    const keys = Object.keys(root);
+    const inner = keys.length === 1 ? root[keys[0]] : null;
+    if (inner && typeof inner === 'object' && (inner.Header || inner.Body)) return inner as T;
+  }
+  return root as T;
 }
 
 function splitName(fullName: string) {
@@ -172,7 +210,7 @@ async function searchClientId(creds: QuickFileCredentials, client: QuickFileClie
         Email: email,
       },
     });
-    const id = extractFirstClientId(byEmail);
+    const id = extractFirstClientId(byEmail, client.name);
     if (id) return id;
   }
   const name = String(client.name || '').trim();
@@ -186,13 +224,13 @@ async function searchClientId(creds: QuickFileCredentials, client: QuickFileClie
         CompanyName: name,
       },
     });
-    const id = extractFirstClientId(byName);
+    const id = extractFirstClientId(byName, name);
     if (id) return id;
   }
   return null;
 }
 
-function extractFirstClientId(result: any): number | null {
+function clientRows(result: any) {
   const body = result?.Body || result;
   const candidates =
     body?.Record ||
@@ -200,11 +238,23 @@ function extractFirstClientId(result: any): number | null {
     body?.ClientRecords?.Client ||
     body?.ClientDetails ||
     [];
-  const list = Array.isArray(candidates) ? candidates : candidates ? [candidates] : [];
-  for (const row of list) {
-    const id = Number(row?.ClientID ?? row?.ClientId ?? row?.ID ?? row?.Id);
-    if (Number.isFinite(id) && id > 0) return id;
+  return (Array.isArray(candidates) ? candidates : candidates ? [candidates] : []) as any[];
+}
+
+function rowClientId(row: any) {
+  const id = Number(row?.ClientID ?? row?.ClientId ?? row?.ID ?? row?.Id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function extractFirstClientId(result: any, preferredName?: string): number | null {
+  const list = clientRows(result);
+  const wanted = String(preferredName || '').trim().toLowerCase();
+  if (wanted) {
+    const exact = list.find(row => String(row?.CompanyName || '').trim().toLowerCase() === wanted);
+    const exactId = exact ? rowClientId(exact) : null;
+    if (exactId) return exactId;
   }
+  if (list.length === 1) return rowClientId(list[0]);
   return null;
 }
 
@@ -234,16 +284,15 @@ export async function ensureQuickFileClient(creds: QuickFileCredentials, client:
 
   const { firstName, surname } = splitName(displayName);
   // ClientContacts is a Body sibling of ClientDetails. Password is required (6–20 chars) even if unused.
+  const phones = [client.phone, client.phone2].map(p => String(p || '').trim()).filter(Boolean).slice(0, 2);
+  // Email and TelephoneNumbers are required by the Client_Create schema even when the customer has neither.
   const defaultContact: Record<string, unknown> = {
     FirstName: firstName,
     Surname: surname,
+    Email: String(client.email || '').trim(),
+    Password: `mpp${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+    TelephoneNumbers: { Telephone: phones },
   };
-  if (client.email) defaultContact.Email = String(client.email).trim();
-  defaultContact.Password = `mpp${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-  const phones = [client.phone, client.phone2].map(p => String(p || '').trim()).filter(Boolean).slice(0, 2);
-  if (phones.length) {
-    defaultContact.TelephoneNumbers = { Telephone: phones };
-  }
   const clientDetails: Record<string, unknown> = {
     CompanyName: displayName.slice(0, 100),
     AddressLine1: (client.address || 'Address not provided').slice(0, 75),
@@ -252,10 +301,20 @@ export async function ensureQuickFileClient(creds: QuickFileCredentials, client:
   clientDetails.CountryISO = 'GB';
   clientDetails.Postcode = (client.postcode || 'UNKNOWN').slice(0, 15);
 
-  const createResult: any = await quickfilePost('client/create', creds, {
-    ClientDetails: clientDetails,
-    ClientContacts: { DefaultContact: defaultContact },
-  });
+  let createResult: any;
+  try {
+    createResult = await quickfilePost('client/create', creds, {
+      ClientDetails: clientDetails,
+      ClientContacts: { DefaultContact: defaultContact },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/already exists/i.test(message)) {
+      const existing = await searchClientId(creds, client);
+      if (existing) return existing;
+    }
+    throw error;
+  }
   const createdId =
     findNumericField(createResult, ['ClientID', 'ClientId']) || extractFirstClientId(createResult);
   if (!createdId) {
@@ -373,12 +432,30 @@ export async function createQuickFileInvoice(
   return { clientId, invoiceId, invoiceNumber };
 }
 
+function explainQuickFileError(message: string) {
+  const cleaned = message.replace(/^\d+(?=[A-Za-z])/, '');
+  const text = cleaned.toLowerCase();
+  if (text.includes('missing account')) {
+    return 'QuickFile does not recognise that account number. Use the numeric account number from Account Settings, not your login email.';
+  }
+  if (text.includes('invalid login') || text.includes('authentication failed')) {
+    return 'QuickFile rejected the API key. Copy the API key from Account Settings → API, not your login password.';
+  }
+  if (text.includes('not permitted') || text.includes('not authorised') || text.includes('not authorized') || text.includes('access denied')) {
+    return `${cleaned} In QuickFile → Create a QuickFile App, enable the method named in that error.`;
+  }
+  return cleaned;
+}
+
 export function parseCredentials(body: any, fallbackAppId?: string): QuickFileCredentials {
   const accNumber = String(body?.accNumber || body?.accountNumber || '').trim();
   const apiKey = String(body?.apiKey || '').trim();
   const applicationId = String(body?.applicationId || fallbackAppId || '').trim();
   if (!accNumber || !apiKey || !applicationId) {
-    throw new Error('QuickFile AccNumber, API Key and Application ID are required.');
+    throw new Error('Account number, API key and Application ID are all required.');
+  }
+  if (accNumber.includes('@') || !/^\d{4,12}$/.test(accNumber)) {
+    throw new Error('Account number must be the numeric QuickFile account number from Account Settings, not your login email.');
   }
   return { accNumber, apiKey, applicationId };
 }

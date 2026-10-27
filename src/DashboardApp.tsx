@@ -281,8 +281,89 @@ const starterPayments: Payment[] = [
 ];
 function readStore<T>(key:string, fallback:T):T { try { const value=localStorage.getItem(key); return value?JSON.parse(value) as T:fallback; } catch { return fallback; } }
 function workspaceKey(base:string, businessId:string|null){return businessId?`${base}_${businessId}`:base;}
-function writeWorkspaceStore<T>(base:string, businessId:string|null, value:T){ localStorage.setItem(workspaceKey(base,businessId), JSON.stringify(value)); }
+function writeWorkspaceStore<T>(base:string, businessId:string|null, value:T){
+  const key=workspaceKey(base,businessId);
+  const save=(payload:T)=>localStorage.setItem(key, JSON.stringify(payload));
+  try { save(value); }
+  catch {
+    // A full Setmore history can exceed the browser storage quota. Keep the working schedule.
+    if(base==='cs_appointments' && Array.isArray(value)){
+      const cutoff=shiftIsoDate(addDays(0), -420);
+      try { save((value as Appointment[]).filter(a=>a.date>=cutoff) as T); } catch { /* keep the previous cache */ }
+    }
+  }
+}
 const SYNC_CHUNK=80;
+const PAGE_SIZE=1000;
+/** PostgREST returns at most 1000 rows per request. Page until the full table is loaded. */
+async function fetchAllRows(
+  client: NonNullable<typeof supabase>,
+  table: string,
+  businessId: string,
+  orderBy: string[],
+  onPage?: (loaded: number, total: number | null) => void,
+): Promise<{data: any[] | null; error: {message: string} | null}> {
+  const query=(from: number, to: number, withCount: boolean)=>{
+    let request: any=client.from(table).select('*', withCount?{count:'exact'}:undefined).eq('business_id', businessId);
+    for(const column of orderBy) request=request.order(column,{ascending:true});
+    return request.range(from, to);
+  };
+  const first=await query(0, PAGE_SIZE-1, true);
+  if(first.error) return {data:null, error:first.error};
+  const rows: any[]=[...(first.data??[])];
+  const total=typeof first.count==='number'?first.count:null;
+  onPage?.(rows.length, total);
+  if(rows.length<PAGE_SIZE) return {data:rows, error:null};
+  const last=total??PAGE_SIZE*80;
+  const starts: number[]=[];
+  for(let from=PAGE_SIZE; from<last; from+=PAGE_SIZE) starts.push(from);
+  const pages: any[][]=new Array(starts.length);
+  let cursor=0;
+  let loaded=rows.length;
+  const worker=async()=>{
+    while(cursor<starts.length){
+      const index=cursor++;
+      const from=starts[index];
+      const to=Math.min(from+PAGE_SIZE-1, (total??from+PAGE_SIZE)-1);
+      const page=await query(from, to, false);
+      if(page.error) throw page.error;
+      pages[index]=page.data??[];
+      loaded+=pages[index].length;
+      onPage?.(total!=null?Math.min(loaded, total):loaded, total);
+    }
+  };
+  try {
+    await Promise.all(Array.from({length:Math.min(4, starts.length)}, ()=>worker()));
+  } catch(error) {
+    const message=error && typeof error==='object' && 'message' in error ? String((error as {message:unknown}).message) : 'Could not load every row';
+    return {data:null, error:{message}};
+  }
+  const seen=new Set(rows.map(row=>row.id).filter(Boolean));
+  for(const batch of pages){
+    if(!batch?.length) break;
+    let added=0;
+    for(const row of batch){
+      if(row?.id && seen.has(row.id)) continue;
+      if(row?.id) seen.add(row.id);
+      rows.push(row);
+      added+=1;
+    }
+    onPage?.(rows.length, total);
+    if(added===0 || batch.length<PAGE_SIZE) break;
+  }
+  return {data:rows, error:null};
+}
+function appointmentSig(a:Pick<Appointment,'customerId'|'date'|'time'|'duration'|'service'|'price'|'status'|'address'|'notes'|'oneOff'|'frequency'|'quickfileInvoiceId'|'quickfileInvoiceNumber'|'quickfileInvoicedAt'>){
+  return JSON.stringify([a.customerId,a.date,a.time,a.duration,a.service,a.price,a.status,a.address||'',a.notes||'',Boolean(a.oneOff),a.frequency??null,a.quickfileInvoiceId??null,a.quickfileInvoiceNumber??null,a.quickfileInvoicedAt??null]);
+}
+function paymentSig(p:Payment){return JSON.stringify([p.appointmentId,p.amount,p.paidAt,p.method]);}
+function customerSyncSig(c:Customer){return JSON.stringify([c.name,c.email,c.phone,c.phone2,c.address,c.town,c.postcode,c.price,c.duration,c.frequency,c.notes,c.service,Boolean(c.archived),c.quickfileClientId??null,c.serviceLines]);}
+function serviceSyncSig(s:Service){return JSON.stringify([s.name,s.duration,s.price,s.color||'']);}
+function sameById<T extends {id:string}>(current:T[], next:T[], sig:(item:T)=>string){
+  if(current.length!==next.length) return false;
+  const map=new Map(current.map(item=>[item.id, sig(item)]));
+  return next.every(item=>map.get(item.id)===sig(item));
+}
 /** Columns PostgREST rejected (missing migrations) — omitted for the rest of the session. */
 const omittedUpsertColumns = new Map<string, Set<string>>();
 function stripKnownMissingColumns(table: string, rows: Record<string, unknown>[]) {
@@ -387,6 +468,40 @@ function resolveAppointmentsLoad(cloud:Appointment[], cached:Appointment[]):Appo
   if(!cached.length) return cloud;
   return mergeById(cloud, cached);
 }
+function appointmentIdentity(a:Pick<Appointment,'customerId'|'date'|'time'|'service'>){
+  return `${a.customerId}|${a.date}|${a.time}|${a.service.trim().toLowerCase()}`;
+}
+/** Repeated Setmore imports inserted the same job under new ids. Keep one copy. */
+function dedupeAppointments(list:Appointment[], payments:Payment[], preferredIds:Set<string>){
+  const paidIds=new Set(payments.filter(p=>p.paidAt).map(p=>p.appointmentId));
+  const score=(a:Appointment)=>(paidIds.has(a.id)?16:0)+(preferredIds.has(a.id)?8:0)+(a.quickfileInvoiceId?4:0)+(a.status!=='Cancelled'?2:0);
+  const byKey=new Map<string, Appointment>();
+  const replaced=new Map<string, string>();
+  for(const appointment of list){
+    const key=appointmentIdentity(appointment);
+    const prev=byKey.get(key);
+    if(!prev){ byKey.set(key, appointment); continue; }
+    const winner=score(appointment)>score(prev)?appointment:prev;
+    const loser=winner===appointment?prev:appointment;
+    byKey.set(key, winner);
+    replaced.set(loser.id, winner.id);
+  }
+  const kept=new Set([...byKey.values()].map(a=>a.id));
+  const resolveId=(id:string)=>{
+    const seen=new Set<string>();
+    let current=id;
+    while(replaced.has(current)&&!seen.has(current)){ seen.add(current); current=replaced.get(current)!; }
+    return kept.has(current)?current:id;
+  };
+  const paymentByAppointment=new Map<string, Payment>();
+  for(const payment of payments){
+    const appointmentId=resolveId(payment.appointmentId);
+    const next=appointmentId===payment.appointmentId?payment:{...payment,appointmentId};
+    const prev=paymentByAppointment.get(appointmentId);
+    if(!prev||(!prev.paidAt&&next.paidAt)||next.amount>prev.amount) paymentByAppointment.set(appointmentId, next);
+  }
+  return {appointments:[...byKey.values()], payments:[...paymentByAppointment.values()]};
+}
 function periodRange(period: FinancePeriod, anchor = new Date()){
   const end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
   const start = new Date(end);
@@ -485,7 +600,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const [payments,setPayments]=useState<Payment[]>(()=>readWorkspaceStore('cs_payments', businessId, businessId?[]:starterPayments));
  const [services,setServices]=useState<Service[]>(()=>withServiceColors(readWorkspaceStore('cs_services', businessId, defaultServices)));
  const [settings,setSettings]=useState<BusinessSettings>(()=>{const saved=readStore('cs_settings',defaultSettings);return {...defaultSettings,...saved,name:businessName||saved.name||defaultSettings.name,mainService:saved.mainService||defaultSettings.mainService};});
- const [remoteReady,setRemoteReady]=useState(!businessId); const [remoteError,setRemoteError]=useState(''); const [cloudStatus,setCloudStatus]=useState(businessId?'Connecting to Supabase…':'Demo mode'); const syncQueue=useRef<Promise<void>>(Promise.resolve()); const appointmentsRef=useRef(appointments); appointmentsRef.current=appointments;
+ const [remoteReady,setRemoteReady]=useState(!businessId); const [remoteError,setRemoteError]=useState(''); const [loadProgress,setLoadProgress]=useState(''); const [cloudStatus,setCloudStatus]=useState(businessId?'Connecting to Supabase…':'Demo mode'); const syncQueue=useRef<Promise<void>>(Promise.resolve()); const appointmentsRef=useRef(appointments); appointmentsRef.current=appointments; const customersRef=useRef(customers); customersRef.current=customers; const paymentsRef=useRef(payments); paymentsRef.current=payments; const servicesRef=useRef(services); servicesRef.current=services; const remoteReadyRef=useRef(remoteReady); remoteReadyRef.current=remoteReady; const syncedAppointmentSig=useRef(new Map<string,string>()); const syncedPaymentSig=useRef(new Map<string,string>());
  const setmoreFileRef=useRef<HTMLInputElement>(null);
  const [page,setPage]=useState('Dashboard'); const [search,setSearch]=useState(''); const [showAdd,setShowAdd]=useState(false); const [editingAppointment,setEditingAppointment]=useState<Appointment|null>(null); const [scheduleCustomerId,setScheduleCustomerId]=useState<string|null>(null); const [scheduleDate,setScheduleDate]=useState(addDays(0)); const [scheduleFormKey,setScheduleFormKey]=useState(0); const [showCustomer,setShowCustomer]=useState(false); const [editingCustomer,setEditingCustomer]=useState<Customer|null>(null); const [customerHistoryPeriod,setCustomerHistoryPeriod]=useState<'week'|'month'|'year'|'all'>('year'); const [showServiceForm,setShowServiceForm]=useState(false); const [editingService,setEditingService]=useState<Service|null>(null); const [selectedService,setSelectedService]=useState<string|null>(null); const [menuOpen,setMenuOpen]=useState(false); const [navExpanded,setNavExpanded]=useState(false); const [scheduleSearch,setScheduleSearch]=useState(''); const [notice,setNotice]=useState(''); const [importingSetmore,setImportingSetmore]=useState(false); const [setmoreImportHistory,setSetmoreImportHistory]=useState<SetmoreLastImport[]>(()=>readSetmoreImportHistory(businessId)); const [selectedSetmoreImportId,setSelectedSetmoreImportId]=useState<string|null>(()=>readSetmoreImportHistory(businessId)[0]?.id??null); const selectedSetmoreImport=setmoreImportHistory.find(entry=>entry.id===selectedSetmoreImportId)??setmoreImportHistory[0]??null; const lastSetmoreImport=setmoreImportHistory[0]??null; const [dashboardScheduleMode,setDashboardScheduleMode]=useState<'Day'|'Week'>('Day'); const [calendarMode,setCalendarMode]=useState<'Day'|'Week'|'2weeks'|'Month'>(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:720px)').matches?'Day':'Week'); const [selectedDate,setSelectedDate]=useState(addDays(0)); const [dayPanelOpen,setDayPanelOpen]=useState(false); const [customerFilter,setCustomerFilter]=useState('All customers'); const [customerListMode,setCustomerListMode]=useState<'Active'|'Past'>('Active'); const [serviceFilter,setServiceFilter]=useState('All services'); const [financePeriod,setFinancePeriod]=useState<FinancePeriod>('week');
  const [quickFile,setQuickFile]=useState<QuickFileConnection>(()=>readQuickFileConnection(businessId));
@@ -522,19 +637,27 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  useEffect(()=>{document.body.style.overflow=menuOpen?'hidden':'';return()=>{document.body.style.overflow='';};},[menuOpen]);
  useEffect(()=>{
   if(!businessId || !supabase){setRemoteReady(true);return;}
-  let cancelled=false; setRemoteReady(false); setRemoteError(''); setCloudStatus('Loading your workspace…');
-  (async()=>{
+  const client=supabase;
+  let cancelled=false;
+  let ticket=0;
+  const load=async(background:boolean)=>{
+   const mine=++ticket;
+   if(!background){setRemoteReady(false); setRemoteError(''); setLoadProgress(''); setCloudStatus('Loading your workspace…');}
+   else setCloudStatus('Checking for updates…');
    try {
     const [customerResult,addressResult,appointmentResult,serviceResult,paymentResult]=await Promise.all([
-     supabase.from('customers').select('*').eq('business_id',businessId).order('full_name'),
-     supabase.from('customer_addresses').select('*').eq('business_id',businessId),
-     supabase.from('appointments').select('*').eq('business_id',businessId).order('starts_at'),
-     supabase.from('services').select('*').eq('business_id',businessId).order('name'),
-     supabase.from('payments').select('*').eq('business_id',businessId)
+     fetchAllRows(client,'customers',businessId,['full_name','id']),
+     fetchAllRows(client,'customer_addresses',businessId,['id']),
+     fetchAllRows(client,'appointments',businessId,['starts_at','id'],(loaded,total)=>{
+      if(cancelled||mine!==ticket) return;
+      setLoadProgress(total!=null?`Loading appointments ${loaded.toLocaleString('en-GB')} / ${total.toLocaleString('en-GB')}`:`Loading appointments ${loaded.toLocaleString('en-GB')}`);
+     }),
+     fetchAllRows(client,'services',businessId,['name','id']),
+     fetchAllRows(client,'payments',businessId,['id'])
     ]);
     const failure=customerResult.error||addressResult.error||appointmentResult.error||serviceResult.error||paymentResult.error;
-    if(failure) throw failure;
-    if(cancelled)return;
+    if(failure) throw new Error(failure.message);
+    if(cancelled||mine!==ticket)return;
     const addresses=(addressResult.data??[]) as Array<{id:string;customer_id:string;address_line_1:string;town:string|null;postcode:string;access_notes:string|null}>;
     const loadedCustomers:Customer[]=applyServiceMap((customerResult.data??[]).map((r:any)=>{const a=addresses.find(x=>x.customer_id===r.id);return normalizeCustomer({id:r.id,name:r.full_name,email:r.email??'',phone:r.phone??'',phone2:r.phone_secondary??'',address:a?.address_line_1??'',town:a?.town??'',postcode:a?.postcode??'',price:Number(r.standard_price??0),duration:Number(r.service_duration_minutes||0),frequency:Number(r.frequency_weeks??6),notes:r.notes??a?.access_notes??'',service:r.preferred_service??'',serviceLines:r.assigned_services,archived:Boolean(r.archived),quickfileClientId:r.quickfile_client_id==null?null:Number(r.quickfile_client_id)||null});}), businessId);
     const loadedAppointments:Appointment[]=(appointmentResult.data??[]).map((r:any)=>{const start=new Date(r.starts_at);const meta=unpackApptNotes(r.internal_notes??'');return {id:r.id,customerId:r.customer_id,date:iso(start),time:`${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')}`,duration:Math.max(5,Math.round((new Date(r.ends_at).getTime()-start.getTime())/60000)),service:r.service_name_snapshot,price:Number(r.price_snapshot),status:(String(r.status).charAt(0).toUpperCase()+String(r.status).slice(1)) as Appointment['status'],address:r.address_snapshot,notes:meta.notes,oneOff:meta.oneOff,frequency:meta.frequency,quickfileInvoiceId:r.quickfile_invoice_id!=null?Number(r.quickfile_invoice_id):(meta.quickfileInvoiceId??null),quickfileInvoiceNumber:r.quickfile_invoice_number??meta.quickfileInvoiceNumber??null,quickfileInvoicedAt:r.quickfile_invoiced_at?String(r.quickfile_invoiced_at):meta.quickfileInvoicedAt??null};});
@@ -545,24 +668,47 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const cachedPayments=readWorkspaceStore('cs_payments', businessId, [] as Payment[]);
     const cachedServices=readWorkspaceStore('cs_services', businessId, [] as Service[]);
     // Merge cloud + local cache so a failed/partial cloud sync cannot wipe the schedule.
-    const finalAppointments=resolveOverlappingAppointments(resolveAppointmentsLoad(resolveAppointmentsLoad(loadedAppointments, cachedAppointments), appointmentsRef.current));
+    const mergedAppointments=resolveAppointmentsLoad(resolveAppointmentsLoad(loadedAppointments, cachedAppointments), appointmentsRef.current);
+    const mergedPayments=mergeById(loadedPayments.length?mergeById(loadedPayments, cachedPayments):cachedPayments, paymentsRef.current);
+    const deduped=dedupeAppointments(mergedAppointments, mergedPayments, new Set(appointmentsRef.current.map(a=>a.id)));
+    const finalAppointments=resolveOverlappingAppointments(deduped.appointments);
     const cachedNormalized=cachedCustomers.map(c=>normalizeCustomer(c));
     const finalCustomers=loadedCustomers.length===0&&cachedNormalized.length>0
       ? cachedNormalized
       : mergeCustomerLists(loadedCustomers, cachedNormalized);
-    const finalPayments=loadedPayments.length?mergeById(loadedPayments, cachedPayments):cachedPayments;
+    const finalPayments=deduped.payments;
     const finalServices=loadedServices.length?loadedServices:withServiceColors(cachedServices.length?cachedServices:defaultServices);
     const restoredFromCache=finalAppointments.length>loadedAppointments.length||(loadedCustomers.length===0&&cachedNormalized.length>0)||finalCustomers.some(c=>c.archived&&!loadedCustomers.find(l=>l.id===c.id)?.archived);
     const withInferred=finalCustomers.map(c=>{ if(customerServiceNames(c).length) return c; const last=finalAppointments.filter(a=>a.customerId===c.id&&a.status!=='Cancelled').sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))[0]; return last?withServiceLines(c,[{service:last.service,price:last.price,duration:last.duration,frequency:last.frequency||c.frequency||6,oneOff:last.oneOff}]):c; });
+    const cloudAppointmentIds=new Set(loadedAppointments.map(a=>a.id));
+    for(const appointment of finalAppointments){ if(cloudAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
+    const cloudPaymentIds=new Set(loadedPayments.map(p=>p.id));
+    for(const payment of finalPayments){ if(cloudPaymentIds.has(payment.id)) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
+    const unchanged=background
+      && sameById(appointmentsRef.current, finalAppointments, appointmentSig)
+      && sameById(paymentsRef.current, finalPayments, paymentSig)
+      && sameById(customersRef.current, withInferred, customerSyncSig)
+      && sameById(servicesRef.current.map(service=>({...service,id:service.name})), finalServices.map(service=>({...service,id:service.name})), serviceSyncSig);
+    if(unchanged){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
     setCustomers(withInferred); setAppointments(finalAppointments); setPayments(finalPayments); setServices(finalServices); persistCustomerServices(withInferred,businessId);
     writeWorkspaceStore('cs_customers',businessId,withInferred);
     if(finalAppointments.length>0) writeWorkspaceStore('cs_appointments',businessId,finalAppointments);
     writeWorkspaceStore('cs_payments',businessId,finalPayments);
     writeWorkspaceStore('cs_services',businessId,finalServices);
-    setCloudStatus(restoredFromCache?'Restored local schedule · syncing to Supabase…':'Connected to Supabase'); setRemoteReady(true);
-   } catch(error) { if(cancelled)return; setRemoteError(error instanceof Error?error.message:'Could not load the Supabase workspace.'); setCloudStatus('Connection error'); }
-  })();
-  return ()=>{cancelled=true};
+    setLoadProgress('');
+    setCloudStatus(restoredFromCache&&!background?'Restored local schedule · syncing to Supabase…':'Connected to Supabase');
+    if(!background) setRemoteReady(true);
+   } catch(error) {
+    if(cancelled||mine!==ticket)return;
+    const message=error instanceof Error?error.message:'Could not load the Supabase workspace.';
+    if(!background){ setRemoteError(message); setCloudStatus('Connection error'); }
+    else { setCloudStatus('Could not refresh'); setNotice('Could not refresh appointments from Supabase: '+message); setTimeout(()=>setNotice(''),7000); }
+   }
+  };
+  void load(false);
+  const onVisible=()=>{ if(document.visibilityState==='visible' && remoteReadyRef.current) void load(true); };
+  document.addEventListener('visibilitychange', onVisible);
+  return ()=>{cancelled=true; document.removeEventListener('visibilitychange', onVisible);};
  },[businessId]);
  useEffect(()=>{
   if(!businessId||!supabase||!remoteReady)return;
@@ -591,7 +737,8 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     // Only sync appointments for customers we just upserted — avoids FK 409 on customer_id.
     // Leave address_id null; address_snapshot carries the property text (avoids address FK 409).
     const customerIds=new Set(customers.map(c=>c.id));
-    const appointmentRows=appointments.filter(a=>customerIds.has(a.customerId)).map(a=>{
+    const dirtyAppointments=appointments.filter(a=>syncedAppointmentSig.current.get(a.id)!==appointmentSig(a));
+    const appointmentRows=dirtyAppointments.filter(a=>customerIds.has(a.customerId)).map(a=>{
       const durationMins=Math.max(5, Number(a.duration)||30);
       const start=new Date(`${a.date}T${a.time}:00`);
       if(Number.isNaN(start.getTime())) return null;
@@ -603,10 +750,16 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     }).filter((row):row is NonNullable<typeof row>=>Boolean(row?.customer_id&&row.starts_at&&row.ends_at));
     const appointmentErr=await upsertInChunks(client,'appointments',appointmentRows,'id');
     if(appointmentErr) errors.push('appointments: '+appointmentErr);
-    const syncedApptIds=new Set(appointmentRows.map(r=>String(r.id)));
-    const paymentRows=payments.filter(p=>syncedApptIds.has(p.appointmentId)).map(p=>({id:p.id,business_id:businessId,appointment_id:p.appointmentId,amount:p.amount,paid_at:p.paidAt?`${p.paidAt}T12:00:00.000Z`:null,method:p.method||'cash'}));
+    else {
+      const savedAppointmentIds=new Set(appointmentRows.map(r=>String(r.id)));
+      for(const appointment of dirtyAppointments){ if(savedAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
+    }
+    const paymentParentIds=new Set(syncedAppointmentSig.current.keys());
+    const dirtyPayments=payments.filter(p=>paymentParentIds.has(p.appointmentId)&&syncedPaymentSig.current.get(p.id)!==paymentSig(p));
+    const paymentRows=dirtyPayments.map(p=>({id:p.id,business_id:businessId,appointment_id:p.appointmentId,amount:p.amount,paid_at:p.paidAt?`${p.paidAt}T12:00:00.000Z`:null,method:p.method||'cash'}));
     const paymentErr=await upsertInChunks(client,'payments',paymentRows,'id');
     if(paymentErr) errors.push('payments: '+paymentErr);
+    else { for(const payment of dirtyPayments) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
     if(errors.length){
       const message=errors.join(' · ');
       setCloudStatus('Save partially failed');
@@ -1114,7 +1267,7 @@ function openEditAppointment(appointment:Appointment){
  },[selectedDate]);
  const calendarDates=calendarMode==='Day'?dayDates:calendarMode==='Week'?weekDates:calendarMode==='2weeks'?twoWeekDates:monthDates;
  const selectedMonth=new Date(selectedDate+'T12:00:00').getMonth();
- if(businessId&&!remoteReady){return <div className="auth-shell"><div className="auth-card"><div className="brand-mark auth-brand-mark"><Sparkles size={21}/></div><h1>{remoteError?'Could not load your workspace':'Connecting MyPurePlan'}</h1><p>{remoteError?'MyPurePlan could not read the database. Check that the SQL migration was run and the connection settings are correct.':'Loading your customers, services and appointments from Supabase…'}</p>{remoteError&&<><pre className="auth-error-detail">{remoteError}</pre><button className="button primary auth-submit" onClick={()=>window.location.reload()}>Try again</button></>}<button className="auth-text-button" onClick={()=>onSignOut?.()}>Sign out</button></div></div>}
+ if(businessId&&!remoteReady){return <div className="auth-shell"><div className="auth-card"><div className="brand-mark auth-brand-mark"><Sparkles size={21}/></div><h1>{remoteError?'Could not load your workspace':'Connecting MyPurePlan'}</h1><p>{remoteError?'MyPurePlan could not read the database. Check that the SQL migration was run and the connection settings are correct.':(loadProgress||'Loading your customers, services and appointments from Supabase…')}</p>{remoteError&&<><pre className="auth-error-detail">{remoteError}</pre><button className="button primary auth-submit" onClick={()=>window.location.reload()}>Try again</button></>}<button className="auth-text-button" onClick={()=>onSignOut?.()}>Sign out</button></div></div>}
  return <div className={`app-shell ${navExpanded?'nav-expanded':'nav-collapsed'}`}>
   {menuOpen&&<button type="button" className="sidebar-scrim" aria-label="Close menu" onClick={()=>setMenuOpen(false)}/>}
   <aside className={`sidebar ${navExpanded?'':'sidebar-collapsed'} ${menuOpen?'sidebar-open':''}`}>
@@ -1224,8 +1377,8 @@ function openEditAppointment(appointment:Appointment){
    {page==='Reports'&&<><div className="page-heading"><div><div className="eyebrow"><Activity size={14}/> BUSINESS PERFORMANCE</div><h1>Reports</h1><p>A simple overview of your workload and scheduled revenue.</p></div><div className="heading-actions"><button className="button secondary" onClick={()=>setPage('Finance')}><Wallet size={16}/> Open Finance</button><button className="button secondary" onClick={()=>exportCSV(appointments.map(a=>({...a,customer:customerName(a.customerId)})) as unknown as Customer[])}><Download size={16}/> Export data</button></div></div><div className="stats-grid"><Stat icon={<CircleDollarSign size={20}/>} label="Scheduled revenue" value={money(appointments.filter(a=>a.status!=='Cancelled').reduce((s,a)=>s+a.price,0))} sub="All active appointments" tone="green"/><Stat icon={<Wallet size={19}/>} label="Collected (all time)" value={money(payments.filter(p=>p.paidAt).reduce((s,p)=>s+p.amount,0))} sub={`${payments.filter(p=>p.paidAt).length} payments`} tone="blue"/><Stat icon={<CheckCircle2 size={19}/>} label="Completed jobs" value={String(appointments.filter(a=>a.status==='Completed').length)} sub="Marked as completed" tone="purple"/><Stat icon={<Users size={19}/>} label="Customers" value={String(customers.length)} sub="In your workspace" tone="amber"/></div><div className="panel report-panel"><h2>Appointment status</h2><p>Distribution of active appointments in your workspace.</p>{(['Confirmed','Completed'] as const).map(s=>{const n=appointments.filter(a=>a.status===s).length;const total=Math.max(1,appointments.filter(a=>a.status!=='Cancelled').length);return <div className="report-bar-row" key={s}><div><span>{s}</span><strong>{n}</strong></div><div className="report-track"><div className={`report-fill fill-${s.toLowerCase()}`} style={{width:`${n/total*100}%`}}/></div></div>})}</div></>}
    {page==='Settings'&&<><div className="page-heading"><div><div className="eyebrow"><Settings size={14}/> YOUR WORKSPACE</div><h1>Settings</h1><p>Configure your business details and booking preferences.</p></div></div><div className="settings-layout"><div className="panel settings-card"><h2>Business profile</h2><p>These details appear in your workspace.</p><form onSubmit={e=>{e.preventDefault();void saveSettings(e.currentTarget);}} className="form-grid"><label>Business name<input name="name" defaultValue={settings.name} key={`name-${settings.name}`}/></label><label>Contact email<input name="email" type="email" defaultValue={settings.email} key={`email-${settings.email}`}/></label><label>Phone number<input name="phone" defaultValue={settings.phone} key={`phone-${settings.phone}`}/></label><label>Business postcode<input name="postcode" defaultValue={settings.postcode} key={`postcode-${settings.postcode}`}/></label><label>Default working days<select name="workingDays" defaultValue={settings.workingDays} key={`days-${settings.workingDays}`}><option>Monday to Friday</option><option>Monday to Saturday</option><option>Every day</option></select></label><label>Time zone<select name="timezone" defaultValue={settings.timezone} key={`tz-${settings.timezone}`}><option value="Europe/London">United Kingdom (GMT/BST)</option></select></label><div className="form-actions"><button className="button primary" type="submit">Save changes</button></div></form></div><div className="panel settings-card"><h2>Import from Setmore</h2><p>Upload a Setmore Excel (.xls / .xlsx) or CSV report to refresh customers, services, appointments, calendar and dashboard — without retyping.</p><div className="setmore-import-box"><button type="button" className="button primary" onClick={openSetmoreImport} disabled={importingSetmore}><Upload size={16}/> {importingSetmore?'Importing…':'Upload Setmore report'}</button><p className="setmore-import-hint">In Setmore go to <strong>Settings → Reports</strong> (or Basic Reporting), pick your date range, then download the report as <strong>.xls / .xlsx</strong> (CSV also works). You can also import customer contacts from Customers → Export.</p><ul className="setmore-import-list"><li>New customers are added; existing ones match by email, phone or name</li><li>Services and prices are created or updated from the report</li><li>Appointments refresh the calendar and dashboard — re-importing the same rows updates them</li></ul>{selectedSetmoreImport&&<div className="setmore-last-import"><strong>{selectedSetmoreImport.id===lastSetmoreImport?.id?'Last import':'Import details'}</strong><p>Loaded <b>{formatDateTime(selectedSetmoreImport.importedAt)}</b>{selectedSetmoreImport.fileName?<>{' · file '}<b>{selectedSetmoreImport.fileName}</b></>:null}{selectedSetmoreImport.fileKind?<>{' · type '}<b>{selectedSetmoreImport.fileKind}</b></>:null}{selectedSetmoreImport.fileModifiedAt?<>{' · file saved '}<b>{formatDateTime(selectedSetmoreImport.fileModifiedAt)}</b></>:null}</p>{selectedSetmoreImport.summaryLine?<p>{selectedSetmoreImport.summaryLine}</p>:null}{selectedSetmoreImport.coverageFrom&&selectedSetmoreImport.coverageTo?<p>Jobs in that file: <b>{dateLabel(selectedSetmoreImport.coverageFrom)}</b>{selectedSetmoreImport.coverageFrom!==selectedSetmoreImport.coverageTo?<>{' – '}<b>{dateLabel(selectedSetmoreImport.coverageTo)}</b></>:null}</p>:null}{typeof selectedSetmoreImport.rowsWithSchedule==='number'?<p>Schedule rows read: <b>{selectedSetmoreImport.rowsWithSchedule}</b>{typeof selectedSetmoreImport.rowsCustomerOnly==='number'?<>{' · customer-only '}<b>{selectedSetmoreImport.rowsCustomerOnly}</b></>:null}</p>:null}{selectedSetmoreImport.coverageTo?<p className="setmore-next-hint">Next time, export from Setmore starting <b>{dateLabel(selectedSetmoreImport.coverageTo)}</b> (or a day earlier if you want overlap).</p>:null}</div>}{setmoreImportHistory.length>0&&<div className="setmore-import-history"><strong>Upload history</strong><p className="setmore-import-hint">Tap an upload to see the same details as above.</p><div className="setmore-import-history-list">{setmoreImportHistory.map(entry=>{const selected=entry.id===(selectedSetmoreImport?.id);return <button type="button" className={`setmore-import-history-row${selected?' is-selected':''}`} key={entry.id||entry.importedAt} onClick={()=>setSelectedSetmoreImportId(entry.id)} aria-pressed={selected}><div className="setmore-import-history-main"><b>{formatDateTime(entry.importedAt)}</b><span>{entry.fileName||'Setmore file'}</span></div><div className="setmore-import-history-meta">{entry.coverageFrom&&entry.coverageTo?<span>{dateLabel(entry.coverageFrom)}{entry.coverageFrom!==entry.coverageTo?<>{' – '}{dateLabel(entry.coverageTo)}</>:null}</span>:<span>No job dates</span>}{entry.fileModifiedAt?<span>File saved {formatDateTime(entry.fileModifiedAt)}</span>:null}</div></button>;})}</div></div>}</div><div className="info-note"><AlertCircle size={17}/><p>Each upload merges into your current workspace{businessId?' and syncs to Supabase':''}. It does not wipe jobs outside the file.</p></div></div><div className="panel settings-card"><h2>QuickFile</h2><p>Connect your QuickFile account to create invoices when you mark a job as Done.</p>
     <div className="form-grid">
-      <label>Account number<input value={quickFile.accNumber} onChange={e=>setQuickFile(s=>({...s,accNumber:e.target.value,connectedAt:null}))} placeholder="Your QuickFile account number" autoComplete="off"/></label>
-      <label>API key<input value={quickFile.apiKey} onChange={e=>setQuickFile(s=>({...s,apiKey:e.target.value,connectedAt:null}))} placeholder="From Account Settings → API" autoComplete="off" type="password"/></label>
+      <label>Account number<input value={quickFile.accNumber} onChange={e=>setQuickFile(s=>({...s,accNumber:e.target.value,connectedAt:null}))} placeholder="Numeric account number, not your email" autoComplete="off"/></label>
+      <label>API key<input value={quickFile.apiKey} onChange={e=>setQuickFile(s=>({...s,apiKey:e.target.value,connectedAt:null}))} placeholder="API key from Account Settings, not your password" autoComplete="off" type="password"/></label>
       <label>Application ID<input value={quickFile.applicationId} onChange={e=>setQuickFile(s=>({...s,applicationId:e.target.value,connectedAt:null}))} placeholder="From Create a QuickFile App" autoComplete="off"/></label>
       <label>VAT on invoices<select value={quickFile.vatMode} onChange={e=>setQuickFile(s=>({...s,vatMode:e.target.value as QuickFileVatMode}))}><option value="exempt">No VAT / exempt</option><option value="standard20_gross">VAT 20% (price is gross)</option><option value="standard20_net">VAT 20% (price is net)</option></select></label>
     </div>

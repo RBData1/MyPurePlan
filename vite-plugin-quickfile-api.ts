@@ -71,7 +71,9 @@ export function quickfileApiPlugin(): Plugin {
           }
           sendJson(res, 404, { error: 'Not found' });
         } catch (error) {
-          sendJson(res, 400, { error: error instanceof Error ? error.message : 'QuickFile request failed' });
+          const message = error instanceof Error ? error.message : 'QuickFile request failed';
+          console.error('[quickfile]', url, message);
+          sendJson(res, 400, { error: message });
         }
       });
     },

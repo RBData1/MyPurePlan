@@ -55,7 +55,9 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data?.error || `QuickFile request failed (${res.status})`);
+    const message = data?.error || `QuickFile request failed (${res.status})`;
+    console.error(message);
+    throw new Error(message);
   }
   return data as T;
 }
