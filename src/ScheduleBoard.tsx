@@ -95,6 +95,18 @@ function monthTitle(date: string) {
   return new Date(`${date}T12:00:00`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
 
+function monthDates(date: string) {
+  const anchor = new Date(`${date}T12:00:00`);
+  const year = anchor.getFullYear();
+  const monthIndex = anchor.getMonth();
+  const last = new Date(year, monthIndex + 1, 0).getDate();
+  return Array.from({ length: last }, (_, index) => iso(new Date(year, monthIndex, index + 1)));
+}
+
+function tally(jobs: ScheduleJob[]) {
+  return { count: jobs.length, amount: jobs.reduce((sum, job) => sum + job.price, 0) };
+}
+
 export default function ScheduleBoard(props: Props) {
   const week = weekOf(props.selectedDate);
   const month = monthGrid(props.selectedDate);
@@ -106,6 +118,18 @@ export default function ScheduleBoard(props: Props) {
     : props.mode === 'Month'
       ? monthTitle(props.selectedDate)
       : props.dateLabel(props.selectedDate);
+
+  const rangeKind: 'day' | 'week' | 'month' = props.view === 'calendar' && props.mode === 'Month'
+    ? 'month'
+    : props.view === 'calendar' && props.mode === 'Day'
+      ? 'day'
+      : 'week';
+  const rangeDates = rangeKind === 'day' ? [props.selectedDate] : rangeKind === 'month' ? monthDates(props.selectedDate) : week;
+  const rangeJobs = props.jobs.filter(job => rangeDates.includes(job.date));
+  const rangeTotal = tally(rangeJobs);
+  const pastTotal = tally(rangeJobs.filter(job => job.date < props.today));
+  const laterTotal = tally(rangeJobs.filter(job => job.date >= props.today));
+  const summaryLine = (total: { count: number; amount: number }) => `${total.count} appointment${total.count === 1 ? '' : 's'} · ${props.money(total.amount)}`;
 
   const move = (direction: -1 | 1) => {
     if (props.view === 'calendar' && props.mode === 'Month') {
@@ -191,6 +215,25 @@ export default function ScheduleBoard(props: Props) {
           <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importing ? 'Importing…' : 'Import Setmore'}</button>
           <button type="button" className="button primary" onClick={() => props.onAdd()}><Plus size={16} /> Appointment</button>
         </div>
+      </div>
+
+      <div className="schedule-summary" aria-label="Appointments in this view">
+        <div className="schedule-summary-item">
+          <span>{rangeKind === 'day' ? 'This day' : rangeKind === 'month' ? 'This month' : 'This week'}</span>
+          <strong>{summaryLine(rangeTotal)}</strong>
+        </div>
+        {rangeKind !== 'day' && (
+          <>
+            <div className="schedule-summary-item">
+              <span>Past days</span>
+              <strong>{summaryLine(pastTotal)}</strong>
+            </div>
+            <div className="schedule-summary-item">
+              <span>Today and later</span>
+              <strong>{summaryLine(laterTotal)}</strong>
+            </div>
+          </>
+        )}
       </div>
 
       <div className={`board-layout${props.planOpen ? ' has-plan' : ''}`}>

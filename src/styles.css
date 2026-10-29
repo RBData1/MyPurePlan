@@ -276,6 +276,13 @@ td strong{font-size:13px;color:#1f3148}
 .button:disabled{opacity:.65;cursor:wait}
 
 .board-heading{align-items:flex-end}
+.schedule-summary{display:flex;flex-wrap:wrap;gap:12px 0;margin:0 0 14px;padding:12px 16px;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
+.schedule-summary-item{display:grid;gap:2px;min-width:min(100%,180px);padding:0 18px}
+.schedule-summary-item:first-child{padding-left:2px}
+.schedule-summary-item + .schedule-summary-item{border-left:1px solid var(--border)}
+.schedule-summary-item span{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6f7f94}
+.schedule-summary-item strong{font-size:15px;color:#172c49}
+@media(max-width:620px){.schedule-summary{gap:10px}.schedule-summary-item,.schedule-summary-item:first-child{padding:0}.schedule-summary-item + .schedule-summary-item{border-left:0;padding-top:8px;border-top:1px solid var(--border)}}
 .board-actions{flex-wrap:wrap;align-items:center}
 .board-actions .segmented button{display:inline-flex;align-items:center;gap:6px}
 .board-count{display:inline-grid;place-items:center;min-width:18px;margin-left:6px;padding:0 6px;border-radius:999px;background:#edf4ff;color:#316de4;font-size:11px;font-weight:750}
