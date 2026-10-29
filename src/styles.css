@@ -331,8 +331,10 @@ tr.is-selected td{background:#f4f8ff}
 .plan-row em{white-space:nowrap}
 .plan-done{padding:12px 18px 16px;display:grid;gap:8px;flex:none}
 .plan-done .plan-list{max-height:200px;flex:none}
-.main-area:has(.list-screen){height:100vh;max-height:100vh;overflow:hidden}
-.main-area:has(.list-screen) .content{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+html{scrollbar-gutter:stable}
+.main-area:has(.list-screen),.main-area:has(.page-scroll){height:100vh;max-height:100vh;overflow:hidden}
+.main-area:has(.list-screen) .content,.main-area:has(.page-scroll) .content{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.page-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
 .list-screen{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .list-screen .page-heading{flex:none;margin-bottom:16px}
 .list-screen .table-panel{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}

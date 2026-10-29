@@ -95,6 +95,109 @@ export function combineInvoiceSources(cloud: InvoiceRecord[], cache: InvoiceReco
   return [...map.values()].sort((a, b) => String(b.issuedAt).localeCompare(String(a.issuedAt)));
 }
 
+function visitLabel(value: string) {
+  return value.toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function invoiceServiceMatches(invoiceService: string, jobService: string) {
+  const job = visitLabel(jobService);
+  const parts = invoiceService.split(',').map(visitLabel).filter(Boolean);
+  if (!parts.length || !job) return true;
+  return parts.some(part => part === job);
+}
+
+type InvoicedVisit = {
+  id: string;
+  customerId: string;
+  date: string;
+  time: string;
+  service: string;
+  status: string;
+  setmoreBookingId?: string;
+  quickfileInvoiceId?: number | null;
+  quickfileInvoiceNumber?: string | null;
+  quickfileInvoicedAt?: string | null;
+};
+
+/**
+ * A Setmore import can replace the visit id while the invoice register still
+ * points at the old one. Put that invoice back on the surviving visit, and
+ * drop a second copy of the same slot that has no invoice.
+ */
+export function settleInvoicedVisits<T extends InvoicedVisit>(
+  appointments: T[],
+  invoices: InvoiceRecord[],
+  nameOf: (customerId: string) => string,
+): { appointments: T[]; invoices: InvoiceRecord[]; removedIds: string[] } {
+  const person = (customerId: string) => visitLabel(nameOf(customerId));
+  const next = appointments.map(appointment => ({ ...appointment }));
+  const removed = new Set<string>();
+  let appointmentChanged = false;
+  let invoiceChanged = false;
+  const invoicesNext = invoices.map(invoice => ({ ...invoice }));
+  const holdersOf = (invoiceId: number) => next.filter(appointment => !removed.has(appointment.id) && appointment.quickfileInvoiceId === invoiceId);
+
+  for (const invoice of invoicesNext) {
+    if (invoice.status === 'void' || !invoice.jobDate || holdersOf(invoice.quickfileInvoiceId).length) continue;
+    const wanted = visitLabel(invoice.customerName);
+    if (!wanted) continue;
+    const candidates = next.filter(appointment => {
+      if (removed.has(appointment.id) || appointment.status === 'Cancelled' || appointment.quickfileInvoiceId) return false;
+      return appointment.date === invoice.jobDate && person(appointment.customerId) === wanted && invoiceServiceMatches(invoice.service, appointment.service);
+    });
+    if (candidates.length !== 1) continue;
+    const target = candidates[0];
+    target.quickfileInvoiceId = invoice.quickfileInvoiceId;
+    target.quickfileInvoiceNumber = invoice.quickfileInvoiceNumber;
+    target.quickfileInvoicedAt = invoice.issuedAt || target.quickfileInvoicedAt || null;
+    if (target.status !== 'Cancelled') target.status = 'Completed';
+    if (invoice.appointmentId !== target.id) {
+      invoice.appointmentId = target.id;
+      invoiceChanged = true;
+    }
+    appointmentChanged = true;
+  }
+
+  const groups = new Map<string, T[]>();
+  for (const appointment of next) {
+    if (removed.has(appointment.id) || appointment.status === 'Cancelled') continue;
+    const key = `${person(appointment.customerId)}|${appointment.date}|${appointment.time}|${visitLabel(appointment.service)}`;
+    const group = groups.get(key);
+    if (group) group.push(appointment);
+    else groups.set(key, [appointment]);
+  }
+  for (const group of groups.values()) {
+    const invoiced = group.filter(appointment => appointment.quickfileInvoiceId);
+    if (!invoiced.length || invoiced.length === group.length) continue;
+    if (new Set(invoiced.map(appointment => appointment.quickfileInvoiceId)).size > 1) continue;
+    const keeper = invoiced[0];
+    for (const other of group) {
+      if (other.id === keeper.id || (other.quickfileInvoiceId && other.quickfileInvoiceId !== keeper.quickfileInvoiceId)) continue;
+      if (!keeper.setmoreBookingId && other.setmoreBookingId) {
+        keeper.setmoreBookingId = other.setmoreBookingId;
+        appointmentChanged = true;
+      }
+      removed.add(other.id);
+    }
+  }
+
+  for (const invoice of invoicesNext) {
+    const holders = holdersOf(invoice.quickfileInvoiceId);
+    if (!holders.length || holders.some(appointment => appointment.id === invoice.appointmentId)) continue;
+    invoice.appointmentId = holders[0].id;
+    invoiceChanged = true;
+  }
+
+  if (!appointmentChanged && removed.size === 0 && !invoiceChanged) {
+    return { appointments, invoices, removedIds: [] };
+  }
+  return {
+    appointments: next.filter(appointment => !removed.has(appointment.id)),
+    invoices: invoiceChanged ? invoicesNext : invoices,
+    removedIds: [...removed],
+  };
+}
+
 export function mergeInvoices(primary: InvoiceRecord[], secondary: InvoiceRecord[]) {
   const map = new Map<number, InvoiceRecord>();
   for (const row of secondary) map.set(row.quickfileInvoiceId, row);
