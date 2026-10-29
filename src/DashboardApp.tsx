@@ -277,24 +277,24 @@ function normalizeCustomer(c: Partial<Customer> & Pick<Customer,'id'|'name'>, se
     quickfileClientId: c.quickfileClientId==null?null:Number(c.quickfileClientId)||null,
   };
 }
-/** Prefer local archived/QuickFile links when cloud is missing columns or lagged behind. */
-function mergeCustomerLists(cloud: Customer[], cached: Customer[]): Customer[] {
-  const cacheById = new Map(cached.map(c => [c.id, c]));
+/** Cloud is the shared copy. A customer who exists only on this device is kept while that save is still pending. */
+function mergeCustomerLists(cloud: Customer[], local: Customer[], keepLocalIds: Set<string>): Customer[] {
+  const localById = new Map(local.map(c => [c.id, c]));
   const merged = cloud.map(c => {
-    const local = cacheById.get(c.id);
-    if (!local) return c;
+    const extra = localById.get(c.id);
+    if (!extra || !keepLocalIds.has(c.id)) return c;
     return {
       ...c,
-      // Past if either side says so — covers unsynced local archive and cloud [mpp:past] notes.
-      archived: Boolean(local.archived) || Boolean(c.archived),
-      phone2: local.phone2 || c.phone2 || '',
-      notes: c.notes || local.notes || '',
-      quickfileClientId: local.quickfileClientId ?? c.quickfileClientId,
+      archived: Boolean(extra.archived) || Boolean(c.archived),
+      phone2: extra.phone2 || c.phone2 || '',
+      notes: c.notes || extra.notes || '',
+      quickfileClientId: extra.quickfileClientId ?? c.quickfileClientId,
     };
   });
-  cached.forEach(c => {
-    if (!cloud.some(x => x.id === c.id)) merged.push(c);
-  });
+  const cloudIds = new Set(cloud.map(c => c.id));
+  for (const customer of local) {
+    if (!cloudIds.has(customer.id) && keepLocalIds.has(customer.id)) merged.push(customer);
+  }
   return merged;
 }
 const starterPayments: Payment[] = [
@@ -520,11 +520,15 @@ function mergeById<T extends {id:string}>(primary:T[], secondary:T[]):T[]{
   primary.forEach(item=>map.set(item.id,item));
   return Array.from(map.values());
 }
-/** Prefer cloud+cache union; never drop local jobs when cloud is empty/partial. */
-function resolveAppointmentsLoad(cloud:Appointment[], cached:Appointment[]):Appointment[]{
-  if(!cloud.length) return cached;
-  if(!cached.length) return cloud;
-  return mergeById(cloud, cached);
+/** After a successful cloud read, another device's delete stays deleted. This device keeps only visits still waiting to upload. */
+function resolveAppointmentsLoad(cloud:Appointment[], local:Appointment[], keepLocalIds:Set<string>):Appointment[]{
+  const localById=new Map(local.map(a=>[a.id, a]));
+  const kept=cloud.map(a=>keepLocalIds.has(a.id)&&localById.has(a.id)?localById.get(a.id)!:a);
+  const cloudIds=new Set(cloud.map(a=>a.id));
+  for(const appointment of local){
+    if(!cloudIds.has(appointment.id)&&keepLocalIds.has(appointment.id)) kept.push(appointment);
+  }
+  return kept;
 }
 function appointmentIdentity(a:Pick<Appointment,'customerId'|'date'|'time'|'service'>){
   return `${a.customerId}|${a.date}|${a.time}|${a.service.trim().toLowerCase()}`;
@@ -566,7 +570,7 @@ function dedupeAppointments(list:Appointment[], payments:Payment[], preferredIds
     const prev=paymentByAppointment.get(appointmentId);
     if(!prev||(!prev.paidAt&&next.paidAt)||next.amount>prev.amount) paymentByAppointment.set(appointmentId, next);
   }
-  return {appointments:[...byKey.values()], payments:[...paymentByAppointment.values()]};
+  return {appointments:[...byKey.values()], payments:[...paymentByAppointment.values()], removedIds:[...replaced.keys()]};
 }
 function periodRange(period: FinancePeriod, anchor = new Date()){
   const end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
@@ -685,7 +689,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const [payments,setPayments]=useState<Payment[]>(()=>readWorkspaceStore('cs_payments', businessId, businessId?[]:starterPayments));
  const [services,setServices]=useState<Service[]>(()=>withServiceColors(readWorkspaceStore('cs_services', businessId, defaultServices)));
  const [settings,setSettings]=useState<BusinessSettings>(()=>{const saved=readStore('cs_settings',defaultSettings);return {...defaultSettings,...saved,name:businessName||saved.name||defaultSettings.name,mainService:saved.mainService||defaultSettings.mainService};});
- const [remoteReady,setRemoteReady]=useState(!businessId); const [remoteError,setRemoteError]=useState(''); const [loadProgress,setLoadProgress]=useState(''); const [cloudStatus,setCloudStatus]=useState(businessId?'Connecting to Supabase…':'Demo mode'); const syncQueue=useRef<Promise<void>>(Promise.resolve()); const appointmentsRef=useRef(appointments); appointmentsRef.current=appointments; const customersRef=useRef(customers); customersRef.current=customers; const paymentsRef=useRef(payments); paymentsRef.current=payments; const servicesRef=useRef(services); servicesRef.current=services; const remoteReadyRef=useRef(remoteReady); remoteReadyRef.current=remoteReady; const syncedAppointmentSig=useRef(new Map<string,string>()); const syncedPaymentSig=useRef(new Map<string,string>());
+ const [remoteReady,setRemoteReady]=useState(!businessId); const [remoteError,setRemoteError]=useState(''); const [loadProgress,setLoadProgress]=useState(''); const [cloudStatus,setCloudStatus]=useState(businessId?'Connecting to Supabase…':'Demo mode'); const syncQueue=useRef<Promise<void>>(Promise.resolve()); const appointmentsRef=useRef(appointments); appointmentsRef.current=appointments; const customersRef=useRef(customers); customersRef.current=customers; const paymentsRef=useRef(payments); paymentsRef.current=payments; const servicesRef=useRef(services); servicesRef.current=services; const remoteReadyRef=useRef(remoteReady); remoteReadyRef.current=remoteReady; const syncedAppointmentSig=useRef(new Map<string,string>()); const syncedPaymentSig=useRef(new Map<string,string>()); const syncedCustomerIds=useRef(new Set<string>());
  const setmoreFileRef=useRef<HTMLInputElement>(null);
  const [page,setPage]=useState('Schedule'); const [search,setSearch]=useState(''); const [showAdd,setShowAdd]=useState(false); const [editingAppointment,setEditingAppointment]=useState<Appointment|null>(null); const [scheduleCustomerId,setScheduleCustomerId]=useState<string|null>(null); const [scheduleDate,setScheduleDate]=useState(addDays(0)); const [scheduleFormKey,setScheduleFormKey]=useState(0); const [showCustomer,setShowCustomer]=useState(false); const [editingCustomer,setEditingCustomer]=useState<Customer|null>(null); const [customerHistoryPeriod,setCustomerHistoryPeriod]=useState<'week'|'month'|'year'|'all'>('year'); const [showServiceForm,setShowServiceForm]=useState(false); const [editingService,setEditingService]=useState<Service|null>(null); const [selectedService,setSelectedService]=useState<string|null>(null); const [menuOpen,setMenuOpen]=useState(false); const [navExpanded,setNavExpanded]=useState(false); const [scheduleSearch,setScheduleSearch]=useState(''); const [notice,setNotice]=useState(''); const [importingSetmore,setImportingSetmore]=useState(false); const [setmoreImportHistory,setSetmoreImportHistory]=useState<SetmoreLastImport[]>(()=>readSetmoreImportHistory(businessId)); const [selectedSetmoreImportId,setSelectedSetmoreImportId]=useState<string|null>(()=>readSetmoreImportHistory(businessId)[0]?.id??null); const selectedSetmoreImport=setmoreImportHistory.find(entry=>entry.id===selectedSetmoreImportId)??setmoreImportHistory[0]??null; const lastSetmoreImport=setmoreImportHistory[0]??null; const [scheduleView,setScheduleView]=useState<'list'|'calendar'>('calendar'); const [planOpen,setPlanOpen]=useState(false); const [calendarMode,setCalendarMode]=useState<'Day'|'Week'|'Month'>(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:720px)').matches?'Day':'Week'); const [selectedDate,setSelectedDate]=useState(addDays(0)); const [dayPanelOpen,setDayPanelOpen]=useState(false); const [customerFilter,setCustomerFilter]=useState('All customers'); const [customerListMode,setCustomerListMode]=useState<'Active'|'Past'>('Active'); const [selectedCustomerIds,setSelectedCustomerIds]=useState<string[]>([]); const [deletingCustomers,setDeletingCustomers]=useState(false); const [serviceFilter,setServiceFilter]=useState('All services'); const [financePeriod,setFinancePeriod]=useState<FinancePeriod>('week');
  const [quickFile,setQuickFile]=useState<QuickFileConnection>(()=>readQuickFileConnection(businessId));
@@ -774,24 +778,44 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const cachedAppointments=readWorkspaceStore('cs_appointments', businessId, [] as Appointment[]);
     const cachedPayments=readWorkspaceStore('cs_payments', businessId, [] as Payment[]);
     const cachedServices=readWorkspaceStore('cs_services', businessId, [] as Service[]);
-    // Merge cloud + local cache so a failed/partial cloud sync cannot wipe the schedule.
-    const mergedAppointments=resolveAppointmentsLoad(resolveAppointmentsLoad(loadedAppointments, cachedAppointments), appointmentsRef.current);
-    const mergedPayments=mergeById(loadedPayments.length?mergeById(loadedPayments, cachedPayments):cachedPayments, paymentsRef.current);
+    const pendingAppointmentIds=new Set(readWorkspaceStore('cs_pending_appointments', businessId, [] as string[]));
+    const pendingCustomerIds=new Set(readWorkspaceStore('cs_pending_customers', businessId, [] as string[]));
+    if(background){
+      for(const appointment of appointmentsRef.current){
+        if(syncedAppointmentSig.current.get(appointment.id)!==appointmentSig(appointment)) pendingAppointmentIds.add(appointment.id);
+      }
+      for(const customer of customersRef.current){
+        if(!syncedCustomerIds.current.has(customer.id)) pendingCustomerIds.add(customer.id);
+        else {
+          const cloud=loadedCustomers.find(row=>row.id===customer.id);
+          if(cloud&&customerSyncSig(customer)!==customerSyncSig(cloud)) pendingCustomerIds.add(customer.id);
+        }
+      }
+    }
+    const localAppointments=background?appointmentsRef.current:cachedAppointments;
+    const mergedAppointments=resolveAppointmentsLoad(loadedAppointments, localAppointments, pendingAppointmentIds);
+    const mergedPayments=mergeById(loadedPayments, cachedPayments.filter(payment=>pendingAppointmentIds.has(payment.appointmentId)||loadedPayments.some(row=>row.id===payment.id)));
     const deduped=dedupeAppointments(mergedAppointments, mergedPayments, new Set(appointmentsRef.current.map(a=>a.id)));
+    const cloudAppointmentIds=new Set(loadedAppointments.map(a=>a.id));
+    for(const id of deduped.removedIds){
+      if(cloudAppointmentIds.has(id)&&!pendingCloudDeletes.current.includes(id)) pendingCloudDeletes.current.push(id);
+    }
     const finalAppointments=resolveOverlappingAppointments(deduped.appointments);
     const cachedNormalized=cachedCustomers.map(c=>normalizeCustomer(c));
-    const finalCustomers=loadedCustomers.length===0&&cachedNormalized.length>0
-      ? cachedNormalized
-      : mergeCustomerLists(loadedCustomers, cachedNormalized);
+    const finalCustomers=mergeCustomerLists(loadedCustomers, background?customersRef.current:cachedNormalized, pendingCustomerIds);
     const ownedCustomerIds=new Set(finalCustomers.map(c=>c.id));
     const ownedAppointments=finalAppointments.filter(a=>ownedCustomerIds.has(a.customerId));
     const ownedAppointmentIds=new Set(ownedAppointments.map(a=>a.id));
     const finalPayments=deduped.payments.filter(p=>ownedAppointmentIds.has(p.appointmentId));
     const finalServices=loadedServices.length?loadedServices:withServiceColors(cachedServices.length?cachedServices:defaultServices);
-    const restoredFromCache=ownedAppointments.length>loadedAppointments.length||(loadedCustomers.length===0&&cachedNormalized.length>0)||finalCustomers.some(c=>c.archived&&!loadedCustomers.find(l=>l.id===c.id)?.archived);
+    const restoredFromCache=ownedAppointments.some(a=>!cloudAppointmentIds.has(a.id))||finalCustomers.some(c=>!loadedCustomers.some(row=>row.id===c.id));
     const withInferred=finalCustomers.map(c=>{ if(customerServiceNames(c).length) return c; const last=ownedAppointments.filter(a=>a.customerId===c.id&&a.status!=='Cancelled').sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))[0]; return last?withServiceLines(c,[{service:last.service,price:last.price,duration:last.duration,frequency:last.frequency||c.frequency||6,oneOff:last.oneOff}]):c; });
-    const cloudAppointmentIds=new Set(loadedAppointments.map(a=>a.id));
-    for(const appointment of ownedAppointments){ if(cloudAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
+    const cloudAppointmentSig=new Map(loadedAppointments.map(a=>[a.id, appointmentSig(a)]));
+    for(const customer of withInferred){ if(loadedCustomers.some(row=>row.id===customer.id)) syncedCustomerIds.current.add(customer.id); }
+    for(const appointment of ownedAppointments){
+      const original=cloudAppointmentSig.get(appointment.id);
+      if(original&&original===appointmentSig(appointment)) syncedAppointmentSig.current.set(appointment.id, original);
+    }
     const cloudPaymentIds=new Set(loadedPayments.map(p=>p.id));
     for(const payment of finalPayments){ if(cloudPaymentIds.has(payment.id)) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
     const unchanged=background
@@ -799,7 +823,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
       && sameById(paymentsRef.current, finalPayments, paymentSig)
       && sameById(customersRef.current, withInferred, customerSyncSig)
       && sameById(servicesRef.current.map(service=>({...service,id:service.name})), finalServices.map(service=>({...service,id:service.name})), serviceSyncSig);
-    if(unchanged){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
+    if(unchanged&&pendingCloudDeletes.current.length===0){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
     setCustomers(withInferred); setAppointments(ownedAppointments); setPayments(finalPayments); setServices(finalServices); persistCustomerServices(withInferred,businessId);
     writeWorkspaceStore('cs_customers',businessId,withInferred);
     writeWorkspaceStore('cs_appointments',businessId,ownedAppointments);
@@ -846,6 +870,10 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const ownedCustomerIds=new Set(customers.map(c=>c.id));
     const ownedAppointments=appointments.filter(a=>ownedCustomerIds.has(a.customerId));
     const ownedAppointmentIds=new Set(ownedAppointments.map(a=>a.id));
+    const pendingCustomers=customers.filter(c=>!syncedCustomerIds.current.has(c.id)).map(c=>c.id);
+    const pendingAppointments=ownedAppointments.filter(a=>syncedAppointmentSig.current.get(a.id)!==appointmentSig(a)).map(a=>a.id);
+    writeWorkspaceStore('cs_pending_customers',businessId,pendingCustomers);
+    writeWorkspaceStore('cs_pending_appointments',businessId,pendingAppointments);
     writeWorkspaceStore('cs_customers',businessId,customers);
     writeWorkspaceStore('cs_appointments',businessId,ownedAppointments);
     writeWorkspaceStore('cs_payments',businessId,payments.filter(p=>ownedAppointmentIds.has(p.appointmentId)));
@@ -857,6 +885,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const customerRows=customers.map(c=>({id:c.id,business_id:businessId,full_name:c.name,email:c.email||null,phone:c.phone||null,notes:packCustomerNotes(c.notes,Boolean(c.archived),c.phone2),standard_price:Number.isFinite(c.price)?c.price:0,frequency_weeks:(allowedFrequency as readonly number[]).includes(Number(c.frequency))?Number(c.frequency):6,preferred_service:c.service||null,service_duration_minutes:c.duration||null,assigned_services:c.serviceLines?.length?c.serviceLines:null,archived:Boolean(c.archived),quickfile_client_id:c.quickfileClientId??null}));
     const customerErr=await upsertInChunks(client,'customers',customerRows,'id');
     if(customerErr) errors.push('customers: '+customerErr);
+    else { customers.forEach(c=>syncedCustomerIds.current.add(c.id)); writeWorkspaceStore('cs_pending_customers',businessId,[]); }
     const addressRows=customers.map(c=>({id:c.id,business_id:businessId,customer_id:c.id,label:'Home',address_line_1:c.address||'Address not provided',town:c.town||null,postcode:c.postcode||'UNKNOWN',access_notes:stripMetaMarkers(c.notes)||null}));
     const addressErr=await upsertInChunks(client,'customer_addresses',addressRows,'id');
     if(addressErr) errors.push('addresses: '+addressErr);
@@ -882,6 +911,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     else {
       const savedAppointmentIds=new Set(appointmentRows.map(r=>String(r.id)));
       for(const appointment of dirtyAppointments){ if(savedAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
+      writeWorkspaceStore('cs_pending_appointments',businessId,ownedAppointments.filter(a=>syncedAppointmentSig.current.get(a.id)!==appointmentSig(a)).map(a=>a.id));
     }
     const paymentParentIds=new Set(syncedAppointmentSig.current.keys());
     const dirtyPayments=payments.filter(p=>paymentParentIds.has(p.appointmentId)&&syncedPaymentSig.current.get(p.id)!==paymentSig(p));
