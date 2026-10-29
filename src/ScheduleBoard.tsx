@@ -266,7 +266,6 @@ export default function ScheduleBoard(props: Props) {
                 {(props.mode === 'Month' ? month : week).map(date => {
                   const dayJobs = jobsOn(date);
                   const outside = props.mode === 'Month' && new Date(`${date}T12:00:00`).getMonth() !== selectedMonth;
-                  const shown = dayJobs.slice(0, props.mode === 'Month' ? 3 : 5);
                   return (
                     <div
                       key={date}
@@ -280,7 +279,7 @@ export default function ScheduleBoard(props: Props) {
                     >
                       <div className="day-head"><span>{props.mode === 'Week' ? weekday(date, 'short') : ''}</span><strong>{new Date(`${date}T12:00:00`).getDate()}</strong></div>
                       <div className="day-events">
-                        {shown.map(job => (
+                        {dayJobs.map(job => (
                           <div
                             key={job.id}
                             draggable
@@ -292,7 +291,6 @@ export default function ScheduleBoard(props: Props) {
                             <b>{job.time}</b> {props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
                           </div>
                         ))}
-                        {dayJobs.length > shown.length && <span className="more-events">+{dayJobs.length - shown.length} more</span>}
                         {dayJobs.length === 0 && !outside && <span className="no-event">Open day</span>}
                       </div>
                     </div>
