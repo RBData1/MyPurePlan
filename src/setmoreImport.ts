@@ -43,6 +43,13 @@ export type ImportAppointment = {
   notes?: string;
   oneOff?: boolean;
   frequency?: number;
+  /** Setmore booking id when the export includes one. Survives a date/time move. */
+  setmoreBookingId?: string;
+  quickfileInvoiceId?: number | null;
+  quickfileInvoiceNumber?: string | null;
+  quickfileInvoicedAt?: string | null;
+  /** Invoiced job that the latest Setmore report no longer lists. Kept on the calendar. */
+  missingFromSetmore?: boolean;
 };
 
 export type ImportService = { name: string; duration: number; price: number; color?: string };
@@ -53,6 +60,12 @@ export type SetmoreImportSummary = {
   customersUpdated: number;
   appointmentsAdded: number;
   appointmentsUpdated: number;
+  /** Jobs whose date or time changed to match the new Setmore report. */
+  appointmentsMoved: number;
+  /** Jobs inside the report's date range that Setmore no longer lists. */
+  appointmentsRemoved: number;
+  /** Invoiced jobs kept on the calendar because Setmore no longer lists them. */
+  appointmentsMissing: number;
   servicesAdded: number;
   paymentsAdded: number;
   skipped: number;
@@ -94,6 +107,8 @@ export type SetmoreImportResult = {
   services: ImportService[];
   payments: ImportPayment[];
   summary: SetmoreImportSummary;
+  /** Appointments removed because they fall inside the report dates and are not in the file. */
+  removedAppointments: ImportAppointment[];
 };
 
 export type SetmoreRow = Record<string, string>;
@@ -869,9 +884,196 @@ type SetmoreReadMeta = {
   detectedHeaders?: string[];
 };
 
+type IncomingSetmoreJob = {
+  customerId: string;
+  date: string;
+  time: string;
+  duration: number;
+  service: string;
+  price: number;
+  status: ImportAppointment['status'];
+  address: string;
+  notes: string;
+  bookingId: string;
+  paid: boolean;
+  frequency: number;
+};
+
+function inReportRange(date: string, from: string | null, to: string | null) {
+  return Boolean(from && to && date >= from && date <= to);
+}
+
 /**
- * Apply parsed Setmore rows (appointment report and/or customer export) onto existing workspace data.
- * Re-importing the same appointments updates them instead of creating duplicates.
+ * Setmore is the schedule inside the report's first and last dates.
+ * Same booking id, or the same customer/date/time/service, is updated in place.
+ * A single unmatched job for the same customer and service is treated as a move.
+ * Anything else in that date range that the file does not list is removed,
+ * except an invoiced job: that work is done, so it stays and is marked missing.
+ */
+function reconcileSetmoreSchedule(
+  existing: ImportAppointment[],
+  incoming: IncomingSetmoreJob[],
+  payments: ImportPayment[],
+  coverageFrom: string | null,
+  coverageTo: string | null,
+) {
+  const pool = existing.map(a => ({ ...a }));
+  const taken = new Set<number>();
+  const consumed = new Set<number>();
+  let updated = 0;
+  let moved = 0;
+  let added = 0;
+  let paymentsAdded = 0;
+
+  const apply = (idx: number, job: IncomingSetmoreJob, incomingIndex: number) => {
+    const prev = pool[idx];
+    const timeChanged = prev.date !== job.date || prev.time !== job.time;
+    pool[idx] = {
+      ...prev,
+      customerId: job.customerId,
+      date: job.date,
+      time: job.time,
+      duration: job.duration,
+      service: job.service,
+      price: Number.isFinite(job.price) ? job.price : prev.price,
+      status: prev.quickfileInvoiceId ? 'Completed' : job.status,
+      address: job.address || prev.address,
+      notes: job.notes || prev.notes,
+      setmoreBookingId: job.bookingId || prev.setmoreBookingId,
+      missingFromSetmore: false,
+    };
+    taken.add(idx);
+    consumed.add(incomingIndex);
+    if (timeChanged) moved += 1;
+    else updated += 1;
+    if (job.paid && !payments.some(p => p.appointmentId === prev.id && p.paidAt)) {
+      payments.push({
+        id: crypto.randomUUID(),
+        appointmentId: prev.id,
+        amount: pool[idx].price,
+        paidAt: job.date,
+        method: 'setmore',
+      });
+      paymentsAdded += 1;
+    }
+  };
+
+  const free = () => pool.map((_, index) => index).filter(index => !taken.has(index));
+
+  const byBooking = new Map<string, number>();
+  for (const index of free()) {
+    const bookingId = pool[index].setmoreBookingId;
+    if (!bookingId || byBooking.has(bookingId)) continue;
+    byBooking.set(bookingId, index);
+  }
+  incoming.forEach((job, incomingIndex) => {
+    if (!job.bookingId || consumed.has(incomingIndex)) return;
+    const index = byBooking.get(job.bookingId);
+    if (index == null || taken.has(index)) return;
+    apply(index, job, incomingIndex);
+  });
+
+  const bySlot = new Map<string, number>();
+  for (const index of free()) {
+    const appointment = pool[index];
+    const key = appointmentKey(appointment.customerId, appointment.date, appointment.time, appointment.service);
+    const previous = bySlot.get(key);
+    if (previous == null || (appointment.quickfileInvoiceId && !pool[previous].quickfileInvoiceId)) bySlot.set(key, index);
+  }
+  incoming.forEach((job, incomingIndex) => {
+    if (consumed.has(incomingIndex)) return;
+    const index = bySlot.get(appointmentKey(job.customerId, job.date, job.time, job.service));
+    if (index == null || taken.has(index)) return;
+    apply(index, job, incomingIndex);
+  });
+
+  const groups = new Map<string, { local: number[]; jobs: number[] }>();
+  const groupKey = (customerId: string, service: string) => `${customerId}|${service.trim().toLowerCase()}`;
+  const groupFor = (key: string) => {
+    const current = groups.get(key);
+    if (current) return current;
+    const created = { local: [] as number[], jobs: [] as number[] };
+    groups.set(key, created);
+    return created;
+  };
+  for (const index of free()) {
+    const appointment = pool[index];
+    if (!inReportRange(appointment.date, coverageFrom, coverageTo)) continue;
+    groupFor(groupKey(appointment.customerId, appointment.service)).local.push(index);
+  }
+  incoming.forEach((job, incomingIndex) => {
+    if (consumed.has(incomingIndex)) return;
+    groupFor(groupKey(job.customerId, job.service)).jobs.push(incomingIndex);
+  });
+  for (const group of groups.values()) {
+    if (group.local.length !== 1 || group.jobs.length !== 1) continue;
+    apply(group.local[0], incoming[group.jobs[0]], group.jobs[0]);
+  }
+
+  incoming.forEach((job, incomingIndex) => {
+    if (consumed.has(incomingIndex)) return;
+    const id = crypto.randomUUID();
+    pool.push({
+      id,
+      customerId: job.customerId,
+      date: job.date,
+      time: job.time,
+      duration: job.duration,
+      service: job.service,
+      price: job.price,
+      status: job.status,
+      address: job.address,
+      notes: job.notes || undefined,
+      oneOff: false,
+      frequency: job.frequency || 6,
+      setmoreBookingId: job.bookingId || undefined,
+    });
+    taken.add(pool.length - 1);
+    added += 1;
+    if (job.paid) {
+      payments.push({
+        id: crypto.randomUUID(),
+        appointmentId: id,
+        amount: job.price,
+        paidAt: job.date,
+        method: 'setmore',
+      });
+      paymentsAdded += 1;
+    }
+  });
+
+  const removed: ImportAppointment[] = [];
+  const kept: ImportAppointment[] = [];
+  let missing = 0;
+  pool.forEach((appointment, index) => {
+    if (taken.has(index) || !inReportRange(appointment.date, coverageFrom, coverageTo)) {
+      kept.push(appointment);
+      return;
+    }
+    if (appointment.quickfileInvoiceId) {
+      kept.push({ ...appointment, status: 'Completed', missingFromSetmore: true });
+      missing += 1;
+      return;
+    }
+    removed.push(appointment);
+  });
+  const keptIds = new Set(kept.map(appointment => appointment.id));
+  return {
+    appointments: kept,
+    payments: payments.filter(payment => keptIds.has(payment.appointmentId)),
+    removed,
+    missing,
+    updated,
+    moved,
+    added,
+    paymentsAdded,
+  };
+}
+
+/**
+ * Apply parsed Setmore rows onto the workspace.
+ * Inside the report's date range, Setmore replaces the schedule.
+ * Jobs outside that range are left as they are.
  */
 export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta: SetmoreReadMeta = {}): SetmoreImportResult {
   if (!rows.length) {
@@ -925,6 +1127,9 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     customersUpdated: 0,
     appointmentsAdded: 0,
     appointmentsUpdated: 0,
+    appointmentsMoved: 0,
+    appointmentsRemoved: 0,
+    appointmentsMissing: 0,
     servicesAdded: 0,
     paymentsAdded: 0,
     skipped: 0,
@@ -939,8 +1144,7 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     sample: preview,
   };
 
-  const apptIndex = new Map<string, number>();
-  appointments.forEach((a, idx) => apptIndex.set(appointmentKey(a.customerId, a.date, a.time, a.service), idx));
+  const incomingJobs: IncomingSetmoreJob[] = [];
   const touchedNewCustomers = new Set<string>();
   const touchedUpdatedCustomers = new Set<string>();
 
@@ -1055,69 +1259,40 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     const status = mapStatus(statusRaw, start.date, paid);
     const customer = customers.find(c => c.id === customerId)!;
     const addressSnapshot = customerProperty(customer) || address || '';
-    const key = appointmentKey(customerId, start.date, start.time, serviceName);
-    const existingIdx = apptIndex.get(key);
-
-    if (existingIdx != null) {
-      const prev = appointments[existingIdx];
-      appointments[existingIdx] = {
-        ...prev,
-        duration,
-        service: serviceName,
-        price: price ?? prev.price,
-        status,
-        address: addressSnapshot || prev.address,
-        notes: jobNotes || prev.notes,
-      };
-      summary.appointmentsUpdated += 1;
-
-      if (paid && !payments.some(p => p.appointmentId === prev.id && p.paidAt)) {
-        payments.push({
-          id: crypto.randomUUID(),
-          appointmentId: prev.id,
-          amount: price ?? prev.price,
-          paidAt: start.date,
-          method: 'setmore',
-        });
-        summary.paymentsAdded += 1;
-      }
-    } else {
-      const id = crypto.randomUUID();
-      const created: ImportAppointment = {
-        id,
-        customerId,
-        date: start.date,
-        time: start.time,
-        duration,
-        service: serviceName,
-        price: price ?? customer.price ?? 0,
-        status,
-        address: addressSnapshot,
-        notes: jobNotes || undefined,
-        oneOff: false,
-        frequency: customer.frequency || 6,
-      };
-      apptIndex.set(key, appointments.length);
-      appointments.push(created);
-      summary.appointmentsAdded += 1;
-
-      if (paid) {
-        payments.push({
-          id: crypto.randomUUID(),
-          appointmentId: id,
-          amount: created.price,
-          paidAt: start.date,
-          method: 'setmore',
-        });
-        summary.paymentsAdded += 1;
-      }
-    }
+    incomingJobs.push({
+      customerId,
+      date: start.date,
+      time: start.time,
+      duration,
+      service: serviceName,
+      price: price ?? customer.price ?? 0,
+      status,
+      address: addressSnapshot,
+      notes: jobNotes,
+      bookingId: pickField(row, 'bookingId').trim(),
+      paid,
+      frequency: customer.frequency || 6,
+    });
   }
 
+  const reconciled = reconcileSetmoreSchedule(appointments, incomingJobs, payments, summary.coverageFrom, summary.coverageTo);
+  summary.appointmentsAdded = reconciled.added;
+  summary.appointmentsUpdated = reconciled.updated;
+  summary.appointmentsMoved = reconciled.moved;
+  summary.appointmentsRemoved = reconciled.removed.length;
+  summary.appointmentsMissing = reconciled.missing;
+  summary.paymentsAdded += reconciled.paymentsAdded;
   summary.customersAdded = touchedNewCustomers.size;
   summary.customersUpdated = touchedUpdatedCustomers.size;
 
-  return { customers, appointments, services, payments, summary };
+  return {
+    customers,
+    appointments: reconciled.appointments,
+    services,
+    payments: reconciled.payments,
+    summary,
+    removedAppointments: reconciled.removed,
+  };
 }
 
 /** @deprecated Prefer applySetmoreFileImport — kept for CSV text tests. */
@@ -1141,7 +1316,12 @@ export function formatSetmoreImportSummary(summary: SetmoreImportSummary): strin
     `${summary.customersUpdated} updated`,
     `${summary.appointmentsAdded} new appointment${summary.appointmentsAdded === 1 ? '' : 's'}`,
     `${summary.appointmentsUpdated} appointment${summary.appointmentsUpdated === 1 ? '' : 's'} refreshed`,
+    `${summary.appointmentsMoved || 0} moved`,
+    `${summary.appointmentsRemoved || 0} removed`,
   ];
+  if (summary.appointmentsMissing) {
+    parts.push(`${summary.appointmentsMissing} invoiced job${summary.appointmentsMissing === 1 ? '' : 's'} kept — not in Setmore`);
+  }
   if (summary.servicesAdded) parts.push(`${summary.servicesAdded} service${summary.servicesAdded === 1 ? '' : 's'} added`);
   if (summary.paymentsAdded) parts.push(`${summary.paymentsAdded} payment${summary.paymentsAdded === 1 ? '' : 's'} recorded`);
   if (summary.skipped) parts.push(`${summary.skipped} row${summary.skipped === 1 ? '' : 's'} skipped`);

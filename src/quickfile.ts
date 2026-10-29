@@ -8,6 +8,8 @@ export type QuickFileConnection = {
   applicationId: string;
   vatMode: QuickFileVatMode;
   connectedAt: string | null;
+  /** Secret from QuickFile → Webhooks. Used to verify payment notifications. */
+  webhookSecret: string;
 };
 
 export const defaultQuickFileConnection = (): QuickFileConnection => ({
@@ -16,6 +18,7 @@ export const defaultQuickFileConnection = (): QuickFileConnection => ({
   applicationId: '',
   vatMode: 'exempt',
   connectedAt: null,
+  webhookSecret: '',
 });
 
 export function quickFileStorageKey(businessId: string | null) {
@@ -83,7 +86,7 @@ export async function createQuickFileInvoiceRequest(
       postcode?: string;
       quickfileClientId?: number | null;
     };
-    line: { service: string; description?: string; price: number; date: string };
+    lines: Array<{ service: string; description?: string; price: number; date: string }>;
   },
 ) {
   return postJson<{ clientId: number; invoiceId: number; invoiceNumber: string }>('/api/quickfile/create-invoice', {

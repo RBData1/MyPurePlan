@@ -325,6 +325,41 @@ export async function ensureQuickFileClient(creds: QuickFileCredentials, client:
   return createdId;
 }
 
+function invoiceHeading(lines: QuickFileInvoiceLineInput[]) {
+  const names = lines.map(line => String(line.service || 'Service').trim() || 'Service');
+  if (names.length <= 1) {
+    const name = names[0] || 'Service';
+    return (name.length >= 2 ? name : `${name} job`).slice(0, 35);
+  }
+  const joined = names.join(', ');
+  if (joined.length >= 2 && joined.length <= 35) return joined;
+  return `${names.length} services`.slice(0, 35);
+}
+
+function buildInvoiceLine(line: QuickFileInvoiceLineInput, vatMode: QuickFileVatMode) {
+  const { unitCost, taxPercentage, taxAmount } = moneyParts(line.price, vatMode);
+  const itemNameRaw = String(line.service || 'Service').trim() || 'Service';
+  const itemName = itemNameRaw.slice(0, 25);
+  const address = String(line.description || '').trim();
+  const itemDescription = [itemNameRaw, address].filter(Boolean).join('\n').slice(0, 5000);
+  const invoiceLine: Record<string, unknown> = {
+    ItemID: 0,
+    ItemName: itemName,
+    ItemDescription: itemDescription || itemName,
+    ItemNominalCode: '4000',
+  };
+  if (taxPercentage > 0) {
+    invoiceLine.Tax1 = {
+      TaxName: 'VAT',
+      TaxPercentage: taxPercentage,
+      TaxAmount: Number(taxAmount.toFixed(2)),
+    };
+  }
+  invoiceLine.UnitCost = Number(unitCost.toFixed(2));
+  invoiceLine.Qty = 1;
+  return invoiceLine;
+}
+
 function moneyParts(price: number, vatMode: QuickFileVatMode) {
   const amount = Math.max(0, Number(price) || 0);
   if (vatMode === 'standard20_gross') {
@@ -343,40 +378,16 @@ export async function createQuickFileInvoice(
   creds: QuickFileCredentials,
   input: {
     client: QuickFileClientInput;
-    line: QuickFileInvoiceLineInput;
+    lines: QuickFileInvoiceLineInput[];
     vatMode: QuickFileVatMode;
     termDays?: number;
   },
 ): Promise<{ clientId: number; invoiceId: number; invoiceNumber: string }> {
+  const lines = input.lines.filter(line => String(line?.service || '').trim() || Number(line?.price) > 0);
+  if (!lines.length) throw new Error('Add at least one service before creating an invoice.');
   const clientId = await ensureQuickFileClient(creds, input.client);
-  const { unitCost, taxPercentage, taxAmount } = moneyParts(input.line.price, input.vatMode);
-  const itemNameRaw = String(input.line.service || 'Service').trim() || 'Service';
-  const itemName = itemNameRaw.slice(0, 25);
-  // InvoiceDescription has min length 2 in QuickFile schema.
-  const invoiceDescription = (itemName.length >= 2 ? itemName : `${itemName} job`).slice(0, 35);
-  const itemDescription = [
-    input.line.description,
-    input.line.date ? `Job date: ${input.line.date}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .slice(0, 5000);
-
-  const invoiceLine: Record<string, unknown> = {
-    ItemID: 0,
-    ItemName: itemName,
-    ItemDescription: itemDescription || itemName,
-    ItemNominalCode: '4000',
-  };
-  if (taxPercentage > 0) {
-    invoiceLine.Tax1 = {
-      TaxName: 'VAT',
-      TaxPercentage: taxPercentage,
-      TaxAmount: Number(taxAmount.toFixed(2)),
-    };
-  }
-  invoiceLine.UnitCost = Number(unitCost.toFixed(2));
-  invoiceLine.Qty = 1;
+  const invoiceDescription = invoiceHeading(lines);
+  const itemLines = lines.map(line => buildInvoiceLine(line, input.vatMode));
 
   // Field order must match Invoice_Create XSD (JSON key order is preserved).
   const invoiceData: Record<string, unknown> = {
@@ -386,19 +397,18 @@ export async function createQuickFileInvoice(
     TermDays: input.termDays ?? 14,
     Language: 'en',
     InvoiceDescription: invoiceDescription,
-    Notes: 'Created from MyPurePlan',
   };
   if (input.vatMode === 'exempt') {
     invoiceData.VatCodes = { Code: 'exempt' };
   }
   invoiceData.InvoiceLines = {
     ItemLines: {
-      ItemLine: [invoiceLine],
+      ItemLine: itemLines,
     },
   };
   invoiceData.Scheduling = {
     SingleInvoiceData: {
-      IssueDate: input.line.date || new Date().toISOString().slice(0, 10),
+      IssueDate: lines.find(line => line.date)?.date || new Date().toISOString().slice(0, 10),
     },
   };
 

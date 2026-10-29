@@ -29,6 +29,28 @@ export function quickfileApiPlugin(): Plugin {
         }
         try {
           const body = await readJson(req);
+          if (url.startsWith('/api/quickfile/webhook')) {
+            const { createClient } = await import('@supabase/supabase-js');
+            const supabaseUrl = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+            const supabaseKey = String(process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim();
+            if (!supabaseUrl || !supabaseKey) {
+              sendJson(res, 500, { error: 'Supabase is not configured for the webhook.' });
+              return;
+            }
+            const client = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } });
+            const { data, error } = await client.rpc('apply_quickfile_webhook', { payload: body });
+            if (error) {
+              sendJson(res, 500, { error: error.message });
+              return;
+            }
+            const result = (data || {}) as { ok?: boolean; error?: string };
+            if (!result.ok) {
+              sendJson(res, 401, { error: result.error || 'Webhook rejected' });
+              return;
+            }
+            sendJson(res, 200, { ok: true });
+            return;
+          }
           const { parseCredentials, testQuickFileConnection, createQuickFileInvoice } = await import(
             './api/_lib/quickfileCore.ts'
           );
@@ -46,6 +68,7 @@ export function quickfileApiPlugin(): Plugin {
             const vatMode = ['exempt', 'standard20_gross', 'standard20_net'].includes(body.vatMode)
               ? body.vatMode
               : 'exempt';
+            const rawLines = Array.isArray(body.lines) && body.lines.length ? body.lines : [body.line || {}];
             const result = await createQuickFileInvoice(creds, {
               client: {
                 name: String(body.client.name).trim(),
@@ -57,12 +80,12 @@ export function quickfileApiPlugin(): Plugin {
                 postcode: body.client.postcode,
                 quickfileClientId: body.client.quickfileClientId ?? null,
               },
-              line: {
-                service: String(body.line?.service || 'Service'),
-                description: body.line?.description,
-                price: Number(body.line?.price || 0),
-                date: String(body.line?.date || new Date().toISOString().slice(0, 10)),
-              },
+              lines: rawLines.map((line: { service?: string; description?: string; price?: number; date?: string }) => ({
+                service: String(line?.service || 'Service'),
+                description: line?.description,
+                price: Number(line?.price || 0),
+                date: String(line?.date || new Date().toISOString().slice(0, 10)),
+              })),
               vatMode,
               termDays: Number(body.termDays) || 14,
             });

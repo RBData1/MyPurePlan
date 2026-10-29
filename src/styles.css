@@ -88,7 +88,7 @@ td strong{font-size:13px;color:#1f3148}
 .compact-customer[draggable="true"]{cursor:grab}.compact-customer[draggable="true"]:active{cursor:grabbing}
 .schedule-item[draggable="true"]{cursor:grab}.schedule-item[draggable="true"]:active{cursor:grabbing}
 .schedule-item-clickable{cursor:pointer;border-radius:12px;transition:background .15s ease}.schedule-item-clickable:hover{background:#f3f7ff}.schedule-item-clickable:focus-visible{outline:3px solid #bdd3ff;outline-offset:2px}.event-chip{cursor:pointer}.event-chip:hover{filter:brightness(.96)}.clickable-row{cursor:pointer}.clickable-row:hover td{background:#f3f7ff}
-.job-flags{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}.job-flag{display:inline-flex;align-items:center;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:750;letter-spacing:.2px}.flag-todo{background:#fff4e8;color:#9a5b12;border:1px solid #f0d2a8}.flag-done{background:#e8f1ff;color:#2d5fbe;border:1px solid #c5d7f5}.flag-unpaid{background:#fff1f0;color:#a5372f;border:1px solid #ffd9d5}.flag-paid{background:#e8f7f1;color:#1a7a5c;border:1px solid #c5ead9}
+.job-flags{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}.job-flag{display:inline-flex;align-items:center;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:750;letter-spacing:.2px}.flag-todo{background:#fff4e8;color:#9a5b12;border:1px solid #f0d2a8}.flag-done{background:#e8f1ff;color:#2d5fbe;border:1px solid #c5d7f5}.flag-unpaid{background:#fff1f0;color:#a5372f;border:1px solid #ffd9d5}.flag-paid{background:#e8f7f1;color:#1a7a5c;border:1px solid #c5ead9}.flag-missing{background:#fff4e8;color:#8a4b12;border:1px solid #f0d2a8}
 .job-quick-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px}.schedule-item .job-quick-actions{margin-top:0;flex-wrap:nowrap}.schedule-item .job-quick-actions .button{padding:5px 10px;font-size:11px}
 .job-outcome-card{background:#f3f7ff;border:1px solid #d7e4f8;border-radius:10px;padding:12px 14px;margin-bottom:4px}.outcome-help{margin:0 0 12px;font-size:12px;color:#5a6d86}.outcome-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.paid-state{pointer-events:none;background:#e8f7f1;color:#1a7a5c;border-color:#c5ead9}.outcome-toggles{display:grid;gap:10px;margin-bottom:10px}.outcome-group{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.outcome-group>span{font-size:12px;font-weight:750;color:#33475f}
 .settle-panel .settle-list{display:grid;gap:0;padding:0 4px 8px}.settle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-top:1px solid #e6ebf3}.settle-main{min-width:0;cursor:pointer;display:grid;gap:3px}.settle-main strong{font-size:13px}.settle-main>span{font-size:11px;color:#6f7f94}.outcome-todo{box-shadow:inset 3px 0 0 #e2a04a}.outcome-done{box-shadow:inset 3px 0 0 #5b8de8}.outcome-paid{box-shadow:inset 3px 0 0 #2ea879}
@@ -274,3 +274,72 @@ td strong{font-size:13px;color:#1f3148}
 .setmore-import-history-main span{font-size:11px;color:#5a6d84;word-break:break-word}
 .setmore-import-history-meta{display:flex;flex-wrap:wrap;gap:8px 12px;font-size:11px;color:#6f7f94}
 .button:disabled{opacity:.65;cursor:wait}
+
+.board-heading{align-items:flex-end}
+.board-actions{flex-wrap:wrap;align-items:center}
+.board-actions .segmented button{display:inline-flex;align-items:center;gap:6px}
+.board-count{display:inline-grid;place-items:center;min-width:18px;margin-left:6px;padding:0 6px;border-radius:999px;background:#edf4ff;color:#316de4;font-size:11px;font-weight:750}
+.button.secondary.chosen{background:#edf4ff;border-color:#9db7e4;color:#2457c5}
+.board-layout{display:grid;gap:14px;align-items:start}
+.board-layout.has-plan{grid-template-columns:minmax(0,1fr) minmax(240px,300px)}
+.board-main{min-width:0;overflow:hidden}
+.board-day-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:16px 18px 2px}
+.board-day-title strong{font-size:16px}
+.board-day-title span,.board-notes{color:#5c6e86}
+.board-notes{margin:6px 0 0;font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.board-job-side{display:grid;justify-items:end;gap:8px}
+.board-job-side .job-flags,.board-job-side .job-quick-actions{justify-content:flex-end}
+.board-plan{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:14px 12px;max-height:min(78vh,860px);overflow:auto}
+.board-plan .queue-card{grid-template-columns:minmax(0,1fr) auto}
+.event-chip.outcome-todo,.board-job.outcome-todo{background:#f4f8ff;border:1px solid #d7e4fa;border-left:4px solid #316de4;box-shadow:none}
+.event-chip.outcome-done,.board-job.outcome-done{background:#f3faf7;border:1px solid #cfe8df;border-left:4px solid #1a9c77;box-shadow:none}
+.event-chip.outcome-paid,.board-job.outcome-paid{background:#f5f6f8;border:1px solid #e2e6ec;border-left:4px solid #8d99a8;box-shadow:none}
+.board-job.outcome-todo:hover{background:#e8f0ff}
+.board-job.outcome-done:hover{background:#e5f6ef}
+.board-job.outcome-paid:hover{background:#eef1f4}
+.event-chip.outcome-todo,.event-chip.outcome-done,.event-chip.outcome-paid{border-radius:7px}
+.job-quick-actions .button.status-done,.job-quick-actions .button.status-pay,.job-quick-actions .button.status-paid{border:1px solid transparent;border-radius:999px;font-weight:700;color:#fff;box-shadow:none}
+.job-quick-actions .button.status-done{background:#316de4;border-color:#316de4}
+.job-quick-actions .button.status-done:hover{background:#2457c5}
+.job-quick-actions .button.status-pay{background:#1a9c77;border-color:#1a9c77}
+.job-quick-actions .button.status-pay:hover{background:#127a5c}
+.job-quick-actions .button.status-paid{background:#8d99a8;border-color:#8d99a8}
+.board-job.is-missing{box-shadow:none;background:#fff8f1}
+.event-chip.is-missing{background:#fff6ea;white-space:normal}
+.chip-missing{display:block;font-size:10px;font-weight:750;color:#8a4b12}
+.invoice-choice-lines{list-style:none;margin:0 0 4px;padding:0;display:grid;gap:6px}
+.invoice-choice-lines li{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#f7f9fc}
+.invoice-choice-lines li.is-current{border-color:#9db7e4;background:#f4f8ff}
+.invoice-choice-lines span{color:#24384f}
+.select-cell{width:42px;padding-left:16px;padding-right:4px}
+.select-cell input{width:16px;height:16px;accent-color:#316de4}
+tr.is-selected td{background:#f4f8ff}
+.button.tiny.danger{background:#fff;color:#a5372f;border:1px solid #f0c2bc}
+.button.tiny.danger:hover{background:#fff1f0}
+.plan-toolbar{align-items:center}
+.plan-cycles{display:flex;flex-wrap:wrap;gap:6px}
+.plan-cycles button{border:1px solid var(--border);background:#fff;color:#3c5170;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700}
+.plan-cycles button.chosen{background:#edf4ff;border-color:#9db7e4;color:#2457c5}
+.plan-list{display:grid;min-height:0;overflow:auto}
+.plan-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 18px;border-top:1px solid var(--border);cursor:pointer}
+.plan-row:hover{background:#f7faff}
+.plan-row input{width:16px;height:16px;accent-color:#316de4}
+.plan-row-copy{min-width:0;display:grid;gap:2px}
+.plan-row-copy strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plan-row-copy small,.plan-row em{color:#5c6e86;font-style:normal;font-size:12px}
+.plan-row-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plan-row em{white-space:nowrap}
+.plan-done{padding:12px 18px 16px;display:grid;gap:8px;flex:none}
+.plan-done .plan-list{max-height:200px;flex:none}
+.main-area:has(.list-screen){height:100vh;max-height:100vh;overflow:hidden}
+.main-area:has(.list-screen) .content{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.list-screen{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.list-screen .page-heading{flex:none;margin-bottom:16px}
+.list-screen .table-panel{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.list-screen .table-controls{flex:none}
+.list-screen .table-wrap,.list-screen .plan-list{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.list-screen thead th{position:sticky;top:0;z-index:1;background:#e4ebf4}
+@media(max-width:960px){
+  .board-layout.has-plan{grid-template-columns:1fr}
+  .board-plan{max-height:46vh}
+}
