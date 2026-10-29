@@ -1,4 +1,4 @@
-import { FileText } from 'lucide-react';
+import { FileText, RefreshCw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { invoiceIsOverdue, type InvoiceRecord } from './invoices';
 
@@ -15,7 +15,7 @@ function dateLabel(value: string | null) {
 
 type Filter = 'open' | 'overdue' | 'paid' | 'all';
 
-export default function InvoiceLedger({ invoices }: { invoices: InvoiceRecord[] }) {
+export default function InvoiceLedger({ invoices, checking, onCheck }: { invoices: InvoiceRecord[]; checking?: boolean; onCheck?: () => void }) {
   const [filter, setFilter] = useState<Filter>('open');
   const counts = useMemo(() => {
     const overdue = invoices.filter(invoice => invoiceIsOverdue(invoice));
@@ -39,11 +39,14 @@ export default function InvoiceLedger({ invoices }: { invoices: InvoiceRecord[] 
           <h2>QuickFile invoices</h2>
           <p>{counts.unpaid.length} open · {money(openAmount)} · {counts.overdue.length} overdue · {money(overdueAmount)} · {counts.paid.length} paid</p>
         </div>
-        <div className="segmented">
+        <div className="heading-actions">
+          {onCheck && <button type="button" className="button secondary" disabled={checking || invoices.every(invoice => invoice.status !== 'unpaid')} onClick={onCheck}><RefreshCw size={15} /> {checking ? 'Checking…' : 'Check QuickFile'}</button>}
+          <div className="segmented">
           <button type="button" className={filter === 'open' ? 'chosen' : ''} onClick={() => setFilter('open')}>Open</button>
           <button type="button" className={filter === 'overdue' ? 'chosen' : ''} onClick={() => setFilter('overdue')}>Overdue</button>
           <button type="button" className={filter === 'paid' ? 'chosen' : ''} onClick={() => setFilter('paid')}>Paid</button>
           <button type="button" className={filter === 'all' ? 'chosen' : ''} onClick={() => setFilter('all')}>All</button>
+          </div>
         </div>
       </div>
       <div className="table-wrap">

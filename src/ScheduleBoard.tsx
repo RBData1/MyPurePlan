@@ -1,5 +1,5 @@
 import type { DragEvent, ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, Search, Wrench, X } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, Search, Upload, Wrench, X } from 'lucide-react';
 import UkDateInput from './UkDateInput';
 
 export type ScheduleJob = {
@@ -45,6 +45,8 @@ type Props = {
   money: (amount: number) => string;
   dateLabel: (date: string) => string;
   onAdd: (customerId?: string) => void;
+  onImport: () => void;
+  importing: boolean;
   onOpenDay: (date: string) => void;
   onOpenJob: (job: ScheduleJob) => void;
   onDragStart: (event: DragEvent, token: string) => void;
@@ -186,6 +188,7 @@ export default function ScheduleBoard(props: Props) {
             <button type="button" className="button tiny secondary" onClick={() => props.setSelectedDate(props.today)}>Today</button>
           </div>
           <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(!props.planOpen)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
+          <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importing ? 'Importing…' : 'Import Setmore'}</button>
           <button type="button" className="button primary" onClick={() => props.onAdd()}><Plus size={16} /> Appointment</button>
         </div>
       </div>

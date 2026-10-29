@@ -51,10 +51,20 @@ export function quickfileApiPlugin(): Plugin {
             sendJson(res, 200, { ok: true });
             return;
           }
-          const { parseCredentials, testQuickFileConnection, createQuickFileInvoice } = await import(
+          const { parseCredentials, testQuickFileConnection, createQuickFileInvoice, fetchQuickFileInvoicePayments } = await import(
             './api/_lib/quickfileCore.ts'
           );
           const creds = parseCredentials(body, process.env.QUICKFILE_APPLICATION_ID);
+          if (url.startsWith('/api/quickfile/invoice-status')) {
+            const invoiceIds = Array.isArray(body?.invoiceIds) ? body.invoiceIds.map((id: unknown) => Number(id)) : [];
+            if (!invoiceIds.some((id: number) => Number.isFinite(id) && id > 0)) {
+              sendJson(res, 400, { error: 'Choose at least one QuickFile invoice to check.' });
+              return;
+            }
+            const invoices = await fetchQuickFileInvoicePayments(creds, invoiceIds);
+            sendJson(res, 200, { invoices });
+            return;
+          }
           if (url.startsWith('/api/quickfile/test')) {
             const result = await testQuickFileConnection(creds);
             sendJson(res, 200, result);

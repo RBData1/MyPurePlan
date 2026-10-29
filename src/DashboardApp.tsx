@@ -10,6 +10,7 @@ import {
   createQuickFileInvoiceRequest,
   isQuickFileConnected,
   readQuickFileConnection,
+  checkQuickFileInvoices,
   testQuickFileConnection,
   vatModeLabel,
   writeQuickFileConnection,
@@ -688,7 +689,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const setmoreFileRef=useRef<HTMLInputElement>(null);
  const [page,setPage]=useState('Schedule'); const [search,setSearch]=useState(''); const [showAdd,setShowAdd]=useState(false); const [editingAppointment,setEditingAppointment]=useState<Appointment|null>(null); const [scheduleCustomerId,setScheduleCustomerId]=useState<string|null>(null); const [scheduleDate,setScheduleDate]=useState(addDays(0)); const [scheduleFormKey,setScheduleFormKey]=useState(0); const [showCustomer,setShowCustomer]=useState(false); const [editingCustomer,setEditingCustomer]=useState<Customer|null>(null); const [customerHistoryPeriod,setCustomerHistoryPeriod]=useState<'week'|'month'|'year'|'all'>('year'); const [showServiceForm,setShowServiceForm]=useState(false); const [editingService,setEditingService]=useState<Service|null>(null); const [selectedService,setSelectedService]=useState<string|null>(null); const [menuOpen,setMenuOpen]=useState(false); const [navExpanded,setNavExpanded]=useState(false); const [scheduleSearch,setScheduleSearch]=useState(''); const [notice,setNotice]=useState(''); const [importingSetmore,setImportingSetmore]=useState(false); const [setmoreImportHistory,setSetmoreImportHistory]=useState<SetmoreLastImport[]>(()=>readSetmoreImportHistory(businessId)); const [selectedSetmoreImportId,setSelectedSetmoreImportId]=useState<string|null>(()=>readSetmoreImportHistory(businessId)[0]?.id??null); const selectedSetmoreImport=setmoreImportHistory.find(entry=>entry.id===selectedSetmoreImportId)??setmoreImportHistory[0]??null; const lastSetmoreImport=setmoreImportHistory[0]??null; const [scheduleView,setScheduleView]=useState<'list'|'calendar'>('calendar'); const [planOpen,setPlanOpen]=useState(false); const [calendarMode,setCalendarMode]=useState<'Day'|'Week'|'Month'>(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:720px)').matches?'Day':'Week'); const [selectedDate,setSelectedDate]=useState(addDays(0)); const [dayPanelOpen,setDayPanelOpen]=useState(false); const [customerFilter,setCustomerFilter]=useState('All customers'); const [customerListMode,setCustomerListMode]=useState<'Active'|'Past'>('Active'); const [selectedCustomerIds,setSelectedCustomerIds]=useState<string[]>([]); const [deletingCustomers,setDeletingCustomers]=useState(false); const [serviceFilter,setServiceFilter]=useState('All services'); const [financePeriod,setFinancePeriod]=useState<FinancePeriod>('week');
  const [quickFile,setQuickFile]=useState<QuickFileConnection>(()=>readQuickFileConnection(businessId));
- const [quickFileBusy,setQuickFileBusy]=useState(false);
+ const [quickFileBusy,setQuickFileBusy]=useState(false); const [checkingQuickFile,setCheckingQuickFile]=useState(false);
  const [invoicingAppointmentId,setInvoicingAppointmentId]=useState<string|null>(null);
  const [invoiceChoiceId,setInvoiceChoiceId]=useState<string|null>(null);
  const [plannedSetmoreIds,setPlannedSetmoreIds]=useState<string[]>(()=>readPlannedSetmore(businessId));
@@ -1290,6 +1291,64 @@ function openEditAppointment(appointment:Appointment){
   const group=appointments.filter(job=>job.quickfileInvoiceId===appointment.quickfileInvoiceId&&job.status!=='Cancelled');
   return group.length?group.sort((a,b)=>a.time.localeCompare(b.time)||a.id.localeCompare(b.id)):[appointment];
  }
+ async function checkQuickFilePayments(){
+  if(!isQuickFileConnected(quickFile)){flash('Connect QuickFile in Settings before checking payments.');return;}
+  const open=invoices.filter(row=>row.status==='unpaid'&&row.quickfileInvoiceId);
+  if(!open.length){flash('No open QuickFile invoices to check.');return;}
+  setCheckingQuickFile(true);
+  try{
+    const found=await checkQuickFileInvoices(quickFile, open.map(row=>row.quickfileInvoiceId));
+    const byId=new Map(found.invoices.map(item=>[item.invoiceId, item]));
+    const paidAtFallback=addDays(0);
+    const changed:InvoiceRecord[]=[];
+    const nextInvoices=invoices.map(row=>{
+      const item=byId.get(row.quickfileInvoiceId);
+      if(!item||row.status!=='unpaid') return row;
+      if(item.state==='paid'){
+        const next:InvoiceRecord={...row,status:'paid',paidAt:item.paidAt||paidAtFallback,paidAmount:item.paidAmount??row.amount,paymentMethod:'quickfile'};
+        changed.push(next);
+        return next;
+      }
+      if(item.state==='void'){
+        const next:InvoiceRecord={...row,status:'void',paidAt:null,paidAmount:null,paymentMethod:null};
+        changed.push(next);
+        return next;
+      }
+      return row;
+    });
+    const paidIds=new Set(changed.filter(row=>row.status==='paid').map(row=>row.quickfileInvoiceId));
+    if(paidIds.size){
+      setPayments(prev=>{
+        const next=prev.map(payment=>({...payment}));
+        for(const job of appointments){
+          if(!job.quickfileInvoiceId||!paidIds.has(job.quickfileInvoiceId)||job.status==='Cancelled') continue;
+          const paidAt=changed.find(row=>row.quickfileInvoiceId===job.quickfileInvoiceId)?.paidAt||paidAtFallback;
+          const existing=next.find(payment=>payment.appointmentId===job.id);
+          if(existing){existing.paidAt=paidAt;existing.method='quickfile';existing.amount=job.price;}
+          else next.push({id:crypto.randomUUID(),appointmentId:job.id,amount:job.price,paidAt,method:'quickfile'});
+        }
+        return next;
+      });
+      setAppointments(prev=>prev.map(job=>job.quickfileInvoiceId&&paidIds.has(job.quickfileInvoiceId)&&job.status!=='Cancelled'&&job.status!=='Completed'?{...job,status:'Completed'}:job));
+    }
+    if(changed.length){
+      setInvoices(nextInvoices);
+      if(businessId&&supabase){
+        const saveError=await saveInvoices(supabase, businessId, changed);
+        if(saveError){flash('QuickFile was checked, but the register was not saved: '+saveError);return;}
+      }
+    }
+    const paidCount=changed.filter(row=>row.status==='paid').length;
+    const voidCount=changed.filter(row=>row.status==='void').length;
+    const partCount=found.invoices.filter(item=>item.state==='part').length;
+    if(!paidCount&&!voidCount&&!partCount) flash('QuickFile still shows these invoices as unpaid.');
+    else flash(['Checked QuickFile.', paidCount?`${paidCount} marked paid`:'', partCount?`${partCount} part-paid`:'', voidCount?`${voidCount} void in QuickFile`:''].filter(Boolean).join(' '));
+  }catch(error){
+    flash(error instanceof Error?error.message:'Could not check QuickFile.');
+  }finally{
+    setCheckingQuickFile(false);
+  }
+ }
  async function markJobPaid(appointment:Appointment, method='cash'){
   if(jobOutcome(appointment)==='todo'){flash('Mark the job as done before taking payment.');return;}
   const targets=jobsSharingInvoice(appointment);
@@ -1591,6 +1650,8 @@ function openEditAppointment(appointment:Appointment){
     money={money}
     dateLabel={dateLabel}
     onAdd={openSchedule}
+    onImport={openSetmoreImport}
+    importing={importingSetmore}
     onOpenDay={openDay}
     onOpenJob={job=>{const appointment=appointments.find(a=>a.id===job.id);if(appointment)openEditAppointment(appointment);}}
     onDragStart={onCalDragStart}
@@ -1612,7 +1673,7 @@ function openEditAppointment(appointment:Appointment){
     <div className="info-note"><AlertCircle size={17}/><p><strong>Tip:</strong> Customers on your main service also show under other services as “not assigned”, so you can add them without re-entering their details. Pin a main service to control the default when booking.</p></div></>}
    {page==='Finance'&&<div className="page-scroll"><div className="page-heading"><div><div className="eyebrow"><Wallet size={14}/> MONEY IN & OUTSTANDING</div><h1>Finance</h1><p>QuickFile invoices stay here after they are created. Open ones turn overdue 14 days after the invoice date. Paid ones update when QuickFile sends a payment, or when you mark the job paid.</p></div><div className="heading-actions"><div className="segmented"><button className={financePeriod==='week'?'chosen':''} onClick={()=>setFinancePeriod('week')}>Week</button><button className={financePeriod==='month'?'chosen':''} onClick={()=>setFinancePeriod('month')}>Month</button><button className={financePeriod==='year'?'chosen':''} onClick={()=>setFinancePeriod('year')}>Year</button></div><button className="button secondary" onClick={()=>exportCSV(financeJobs.map(a=>({date:a.date,time:a.time,customer:customerName(a.customerId),service:a.service,status:a.status,amount:a.price,payment:isPaid(a.id)?'Paid':'Unpaid',paidAt:paymentFor(a.id)?.paidAt||''})))}><Download size={16}/> Export CSV</button></div></div>
     <p className="finance-period-label">{dateLabel(financeRange.start)} – {dateLabel(financeRange.end)}</p>
-    <InvoiceLedger invoices={invoices}/>
+    <InvoiceLedger invoices={invoices} checking={checkingQuickFile} onCheck={()=>void checkQuickFilePayments()}/>
     {invoiceNotice&&<div className="info-note"><AlertCircle size={17}/><p>{invoiceNotice}</p></div>}
     <div className="stats-grid"><Stat icon={<CircleDollarSign size={20}/>} label="Billed in period" value={money(financeBilled)} sub={`${financeJobs.length} billable jobs`} tone="blue"/><Stat icon={<CheckCircle2 size={19}/>} label="Collected" value={money(financeCollected)} sub={`${financePaid.length} paid`} tone="green"/><Stat icon={<AlertCircle size={19}/>} label="Outstanding" value={money(financeOutstanding)} sub={`${financeUnpaid.length} unpaid`} tone="amber"/><Stat icon={<CalendarCheck size={19}/>} label="Completed jobs" value={String(financeJobs.filter(a=>a.status==='Completed').length)} sub="Marked complete" tone="purple"/></div>
     <div className="panel table-panel"><div className="panel-heading padded-heading"><div><h2>Unpaid</h2><p>Customers who still need to pay for work in this period</p></div></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Status</th><th>Amount</th><th></th></tr></thead><tbody>{financeUnpaid.map(a=><tr key={a.id}><td><strong>{dateLabel(a.date)}</strong><small className="table-sub">{a.time}</small></td><td><strong>{customerName(a.customerId)}</strong></td><td><span>{a.service}</span></td><td><Status status={a.status}/></td><td><strong>{money(a.price)}</strong></td><td><div className="row-actions">{a.status!=='Completed'&&!isPaid(a.id)?<button className="button tiny primary" onClick={()=>markJobCompleted(a.id)}>Done</button>:<button className="button tiny primary" onClick={()=>void markJobPaid(a)}>Pay</button>}</div></td></tr>)}</tbody></table>{financeUnpaid.length===0&&<div className="success-empty"><CheckCircle2 size={20}/> No outstanding payments in this period.</div>}</div></div>

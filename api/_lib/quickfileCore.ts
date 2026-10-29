@@ -180,6 +180,47 @@ function splitName(fullName: string) {
   return { firstName: parts[0], surname: parts.slice(1).join(' ') };
 }
 
+export type QuickFileInvoicePayment = {
+  invoiceId: number;
+  state: 'paid' | 'unpaid' | 'part' | 'void';
+  paidAt: string | null;
+  paidAmount: number | null;
+};
+
+function quickFileDay(value: string | null) {
+  if (!value) return null;
+  const match = value.match(/\d{4}-\d{2}-\d{2}/);
+  if (match) return match[0];
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function readInvoiceStatus(result: any) {
+  const details = result?.Body?.InvoiceDetails || result?.InvoiceDetails || result?.Body || {};
+  const raw = String(details.Status || details.InvoiceStatus || '').trim().toUpperCase();
+  if (!raw || raw === 'SUCCESS' || raw === 'FAILURE') return { status: '', details };
+  return { status: raw, details };
+}
+
+/** Ask QuickFile for the current status of invoices the webhook may have missed. */
+export async function fetchQuickFileInvoicePayments(creds: QuickFileCredentials, invoiceIds: number[]): Promise<QuickFileInvoicePayment[]> {
+  const unique = [...new Set(invoiceIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0))].slice(0, 40);
+  const out: QuickFileInvoicePayment[] = [];
+  for (const invoiceId of unique) {
+    const result: any = await quickfilePost('invoice/get', creds, { InvoiceID: invoiceId });
+    const { status, details } = readInvoiceStatus(result);
+    if (!status) throw new Error('QuickFile did not return an invoice status. Enable Invoice_Get on your QuickFile app, then try again.');
+    const paidAt = quickFileDay(findStringField(details, ['PaymentDate', 'PaidDate', 'DatePaid', 'LastPaymentDate']));
+    const paidAmount = findNumericField(details, ['AmountPaid', 'PaidAmount', 'TotalPaid']);
+    if (status === 'PAIDFULL' || status === 'PAID') out.push({ invoiceId, state: 'paid', paidAt, paidAmount });
+    else if (status === 'PAIDPART') out.push({ invoiceId, state: 'part', paidAt, paidAmount });
+    else if (status === 'DELETED') out.push({ invoiceId, state: 'void', paidAt: null, paidAmount: null });
+    else out.push({ invoiceId, state: 'unpaid', paidAt: null, paidAmount: null });
+  }
+  return out;
+}
+
 export async function testQuickFileConnection(creds: QuickFileCredentials): Promise<{ ok: true; clientsFound: number }> {
   const result: any = await quickfilePost('client/search', creds, {
     SearchParameters: {
