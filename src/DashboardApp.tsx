@@ -782,26 +782,29 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const finalCustomers=loadedCustomers.length===0&&cachedNormalized.length>0
       ? cachedNormalized
       : mergeCustomerLists(loadedCustomers, cachedNormalized);
-    const finalPayments=deduped.payments;
+    const ownedCustomerIds=new Set(finalCustomers.map(c=>c.id));
+    const ownedAppointments=finalAppointments.filter(a=>ownedCustomerIds.has(a.customerId));
+    const ownedAppointmentIds=new Set(ownedAppointments.map(a=>a.id));
+    const finalPayments=deduped.payments.filter(p=>ownedAppointmentIds.has(p.appointmentId));
     const finalServices=loadedServices.length?loadedServices:withServiceColors(cachedServices.length?cachedServices:defaultServices);
-    const restoredFromCache=finalAppointments.length>loadedAppointments.length||(loadedCustomers.length===0&&cachedNormalized.length>0)||finalCustomers.some(c=>c.archived&&!loadedCustomers.find(l=>l.id===c.id)?.archived);
-    const withInferred=finalCustomers.map(c=>{ if(customerServiceNames(c).length) return c; const last=finalAppointments.filter(a=>a.customerId===c.id&&a.status!=='Cancelled').sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))[0]; return last?withServiceLines(c,[{service:last.service,price:last.price,duration:last.duration,frequency:last.frequency||c.frequency||6,oneOff:last.oneOff}]):c; });
+    const restoredFromCache=ownedAppointments.length>loadedAppointments.length||(loadedCustomers.length===0&&cachedNormalized.length>0)||finalCustomers.some(c=>c.archived&&!loadedCustomers.find(l=>l.id===c.id)?.archived);
+    const withInferred=finalCustomers.map(c=>{ if(customerServiceNames(c).length) return c; const last=ownedAppointments.filter(a=>a.customerId===c.id&&a.status!=='Cancelled').sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))[0]; return last?withServiceLines(c,[{service:last.service,price:last.price,duration:last.duration,frequency:last.frequency||c.frequency||6,oneOff:last.oneOff}]):c; });
     const cloudAppointmentIds=new Set(loadedAppointments.map(a=>a.id));
-    for(const appointment of finalAppointments){ if(cloudAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
+    for(const appointment of ownedAppointments){ if(cloudAppointmentIds.has(appointment.id)) syncedAppointmentSig.current.set(appointment.id, appointmentSig(appointment)); }
     const cloudPaymentIds=new Set(loadedPayments.map(p=>p.id));
     for(const payment of finalPayments){ if(cloudPaymentIds.has(payment.id)) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
     const unchanged=background
-      && sameById(appointmentsRef.current, finalAppointments, appointmentSig)
+      && sameById(appointmentsRef.current, ownedAppointments, appointmentSig)
       && sameById(paymentsRef.current, finalPayments, paymentSig)
       && sameById(customersRef.current, withInferred, customerSyncSig)
       && sameById(servicesRef.current.map(service=>({...service,id:service.name})), finalServices.map(service=>({...service,id:service.name})), serviceSyncSig);
     if(unchanged){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
-    setCustomers(withInferred); setAppointments(finalAppointments); setPayments(finalPayments); setServices(finalServices); persistCustomerServices(withInferred,businessId);
+    setCustomers(withInferred); setAppointments(ownedAppointments); setPayments(finalPayments); setServices(finalServices); persistCustomerServices(withInferred,businessId);
     writeWorkspaceStore('cs_customers',businessId,withInferred);
-    if(finalAppointments.length>0) writeWorkspaceStore('cs_appointments',businessId,finalAppointments);
+    writeWorkspaceStore('cs_appointments',businessId,ownedAppointments);
     writeWorkspaceStore('cs_payments',businessId,finalPayments);
     writeWorkspaceStore('cs_services',businessId,finalServices);
-    const derivedInvoices=invoicesFromAppointments(finalAppointments, withInferred, finalPayments);
+    const derivedInvoices=invoicesFromAppointments(ownedAppointments, withInferred, finalPayments);
     const invoiceLoad=await loadInvoices(client, businessId);
     if(invoiceLoad.error){
       const localInvoices=combineInvoiceSources([], readInvoiceCache(businessId), derivedInvoices);
@@ -839,9 +842,12 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
    const save=async()=>{
     setCloudStatus('Saving changes…');
     // Always keep a local backup first so HMR / reload cannot wipe the workspace.
+    const ownedCustomerIds=new Set(customers.map(c=>c.id));
+    const ownedAppointments=appointments.filter(a=>ownedCustomerIds.has(a.customerId));
+    const ownedAppointmentIds=new Set(ownedAppointments.map(a=>a.id));
     writeWorkspaceStore('cs_customers',businessId,customers);
-    if(appointments.length>0) writeWorkspaceStore('cs_appointments',businessId,appointments);
-    writeWorkspaceStore('cs_payments',businessId,payments);
+    writeWorkspaceStore('cs_appointments',businessId,ownedAppointments);
+    writeWorkspaceStore('cs_payments',businessId,payments.filter(p=>ownedAppointmentIds.has(p.appointmentId)));
     writeWorkspaceStore('cs_services',businessId,services);
     const errors:string[]=[];
     const allowedFrequency=[4,6,8,10,12] as const;
@@ -908,6 +914,13 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
   },450);
   return ()=>window.clearTimeout(timer);
  },[customers,appointments,payments,services,businessId,remoteReady]);
+ useEffect(()=>{
+  const ids=new Set(customers.map(customer=>customer.id));
+  if(!appointments.some(appointment=>!ids.has(appointment.customerId))) return;
+  const keptIds=new Set(appointments.filter(appointment=>ids.has(appointment.customerId)).map(appointment=>appointment.id));
+  setAppointments(prev=>prev.filter(appointment=>ids.has(appointment.customerId)));
+  setPayments(prev=>prev.filter(payment=>keptIds.has(payment.appointmentId)));
+ },[customers,appointments]);
  const todayAppointments=useMemo(()=>appointments.filter(a=>a.date===selectedDate&&a.status!=='Cancelled').sort((a,b)=>a.time.localeCompare(b.time)),[appointments,selectedDate]);
  const todaysTotal=todayAppointments.reduce((s,a)=>s+a.price,0);
  const activeCustomers=customers.filter(c=>!c.archived);
