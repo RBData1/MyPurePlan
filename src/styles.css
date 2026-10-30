@@ -324,6 +324,10 @@ td strong{font-size:13px;color:#1f3148}
 .invoice-choice-lines label{display:flex;align-items:center;gap:10px;min-width:0;cursor:pointer}
 .invoice-choice-lines label input{width:16px;height:16px;accent-color:#316de4;flex:none}
 .invoice-choice-lines span{color:#24384f;min-width:0}
+.invoice-prompt{z-index:100}
+.invoice-prompt-card{width:min(400px,calc(100vw - 32px));background:#fff;border-radius:16px;padding:18px 18px 14px;box-shadow:0 16px 40px rgba(23,44,73,.18)}
+.invoice-prompt-card h2{margin:0 0 6px;font-size:20px}
+.invoice-prompt-card>p{margin:0 0 14px;color:#5c6e86;font-size:14px}
 .select-cell{width:42px;padding-left:16px;padding-right:4px}
 .select-cell input{width:16px;height:16px;accent-color:#316de4}
 tr.is-selected td{background:#f4f8ff}
