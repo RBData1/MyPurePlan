@@ -1,6 +1,7 @@
 /** QuickFile invoice register: created here, marked paid by the QuickFile webhook or in the app. */
 
 import type { supabase as supabaseClient } from './supabase';
+import { defaultQuickFileConnection, isQuickFileConnected, type QuickFileConnection, type QuickFileVatMode } from './quickfile';
 
 export type InvoiceStatus = 'unpaid' | 'paid' | 'void';
 
@@ -268,17 +269,56 @@ export async function saveInvoices(client: Client, businessId: string, invoices:
   return upsertError?.message || null;
 }
 
+function quickFileFromSettings(raw: unknown): QuickFileConnection {
+  const parsed = raw && typeof raw === 'object' ? raw as Partial<QuickFileConnection> : {};
+  const vat = String(parsed.vatMode || '');
+  const vatMode: QuickFileVatMode = vat === 'standard20_gross' || vat === 'standard20_net' || vat === 'exempt' ? vat : 'exempt';
+  return {
+    ...defaultQuickFileConnection(),
+    accNumber: String(parsed.accNumber || ''),
+    apiKey: String(parsed.apiKey || ''),
+    applicationId: String(parsed.applicationId || ''),
+    webhookSecret: String(parsed.webhookSecret || ''),
+    connectedAt: parsed.connectedAt ? String(parsed.connectedAt) : null,
+    vatMode,
+  };
+}
+
+export async function loadQuickFileIntegration(
+  client: Client,
+  businessId: string,
+): Promise<{ connection: QuickFileConnection | null; status: 'connected' | 'disconnected' | 'missing'; updatedAt: string | null; error: string | null }> {
+  const { data, error } = await client.from('integrations').select('settings,status,updated_at').eq('business_id', businessId).eq('provider', 'quickfile').maybeSingle();
+  if (error) return { connection: null, status: 'missing', updatedAt: null, error: error.message };
+  if (!data) return { connection: null, status: 'missing', updatedAt: null, error: null };
+  const row = data as { settings?: unknown; status?: string; updated_at?: string };
+  const connection = quickFileFromSettings(row.settings);
+  const updatedAt = row.updated_at ? String(row.updated_at) : null;
+  if (isQuickFileConnected(connection)) return { connection, status: 'connected', updatedAt, error: null };
+  if (String(row.status) === 'disconnected') return { connection: null, status: 'disconnected', updatedAt, error: null };
+  return { connection: null, status: 'missing', updatedAt, error: null };
+}
+
 export async function saveQuickFileIntegration(
   client: Client,
   businessId: string,
-  settings: { accNumber: string; webhookSecret: string },
+  connection: QuickFileConnection,
 ) {
+  const connected = isQuickFileConnected(connection);
+  const accNumber = connection.accNumber.trim();
   const { error } = await client.from('integrations').upsert({
     business_id: businessId,
     provider: 'quickfile',
-    external_account_id: settings.accNumber,
-    status: 'connected',
-    settings: { accNumber: settings.accNumber.trim(), webhookSecret: settings.webhookSecret.trim() },
+    external_account_id: accNumber || null,
+    status: connected ? 'connected' : 'disconnected',
+    settings: {
+      accNumber,
+      apiKey: connection.apiKey.trim(),
+      applicationId: connection.applicationId.trim(),
+      vatMode: connection.vatMode,
+      webhookSecret: connection.webhookSecret.trim(),
+      connectedAt: connected ? connection.connectedAt : null,
+    },
     updated_at: new Date().toISOString(),
   }, { onConflict: 'business_id,provider' });
   return error?.message || null;

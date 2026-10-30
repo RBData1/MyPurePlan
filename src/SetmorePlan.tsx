@@ -1,4 +1,4 @@
-import { Search } from 'lucide-react';
+import { Check, Search, Undo2 } from 'lucide-react';
 
 const CYCLES = [4, 6, 8, 10, 12] as const;
 export type PlanCycle = 'all' | (typeof CYCLES)[number];
@@ -22,6 +22,7 @@ type Props = {
   showPlanned: boolean;
   setShowPlanned: (open: boolean) => void;
   onToggle: (id: string) => void;
+  onOpen: (id: string) => void;
   dateLabel: (date: string) => string;
 };
 
@@ -37,19 +38,24 @@ export default function SetmorePlan(props: Props) {
   const open = visible.filter(customer => !customer.planned);
   const planned = visible.filter(customer => customer.planned);
   const row = (customer: SetmorePlanCustomer) => (
-    <label key={customer.id} className="plan-row">
-      <input
-        type="checkbox"
-        checked={customer.planned}
-        onChange={() => props.onToggle(customer.id)}
-        aria-label={`Planned in Setmore: ${customer.name}`}
-      />
-      <span className="plan-row-copy">
-        <strong>{customer.name}</strong>
-        <small>{customer.place || 'No address'} · {customer.lastVisit ? `Last ${props.dateLabel(customer.lastVisit)}` : 'No past visit'}</small>
-      </span>
-      <em>{customer.cycleLabel}</em>
-    </label>
+    <div key={customer.id} className={`plan-row${customer.planned ? ' is-planned' : ''}`}>
+      <button type="button" className="plan-row-open" onClick={() => props.onOpen(customer.id)}>
+        <span className="plan-row-copy">
+          <strong>{customer.name}</strong>
+          <small>{customer.place || 'No address'} · {customer.lastVisit ? `Last ${props.dateLabel(customer.lastVisit)}` : 'No past visit'}</small>
+        </span>
+        <em>{customer.cycleLabel}</em>
+      </button>
+      <button
+        type="button"
+        className={`plan-mark${customer.planned ? ' is-planned' : ''}`}
+        aria-label={customer.planned ? `Put ${customer.name} back on the list` : `Mark ${customer.name} as planned in Setmore`}
+        title={customer.planned ? 'Put back on the list' : 'Mark as planned in Setmore'}
+        onClick={() => props.onToggle(customer.id)}
+      >
+        {customer.planned ? <Undo2 size={16} /> : <Check size={16} />}
+      </button>
+    </div>
   );
 
   return (
@@ -57,7 +63,7 @@ export default function SetmorePlan(props: Props) {
       <div className="page-heading">
         <div>
           <h1>Setmore</h1>
-          <p>Customers with no upcoming visit. Tick each one after you book them in Setmore. The next Setmore import rebuilds this list.</p>
+          <p>Customers with no upcoming visit. Open a name to see the customer. The tick marks them as booked in Setmore, and the arrow puts them back. The next Setmore import rebuilds this list.</p>
         </div>
       </div>
       <div className="panel table-panel">
