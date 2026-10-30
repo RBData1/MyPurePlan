@@ -36,11 +36,11 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
     <div className="panel table-panel" style={{ marginBottom: 18 }}>
       <div className="panel-heading padded-heading">
         <div>
-          <h2>QuickFile invoices</h2>
+          <h2>Invoices</h2>
           <p>{counts.unpaid.length} open · {money(openAmount)} · {counts.overdue.length} overdue · {money(overdueAmount)} · {counts.paid.length} paid</p>
         </div>
         <div className="heading-actions">
-          {onCheck && <button type="button" className="button secondary" disabled={checking || invoices.every(invoice => invoice.status !== 'unpaid')} onClick={onCheck}><RefreshCw size={15} /> {checking ? 'Checking…' : 'Check QuickFile'}</button>}
+          {onCheck && <button type="button" className="button secondary" disabled={checking || invoices.every(invoice => invoice.status !== 'unpaid' || invoice.quickfileInvoiceId < 0 || invoice.source === 'local')} onClick={onCheck}><RefreshCw size={15} /> {checking ? 'Checking…' : 'Check QuickFile'}</button>}
           <div className="segmented">
           <button type="button" className={filter === 'open' ? 'chosen' : ''} onClick={() => setFilter('open')}>Open</button>
           <button type="button" className={filter === 'overdue' ? 'chosen' : ''} onClick={() => setFilter('overdue')}>Overdue</button>
@@ -67,7 +67,7 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
               const overdue = invoiceIsOverdue(invoice);
               return (
                 <tr key={invoice.quickfileInvoiceId}>
-                  <td><strong>{invoice.quickfileInvoiceNumber || invoice.quickfileInvoiceId}</strong></td>
+                  <td><strong>{invoice.source === 'local' || invoice.quickfileInvoiceId < 0 ? 'Local' : (invoice.quickfileInvoiceNumber || invoice.quickfileInvoiceId)}</strong></td>
                   <td>
                     <strong>{invoice.customerName || 'Customer'}</strong>
                     {invoice.address ? <small className="table-sub">{invoice.address}</small> : null}
@@ -90,7 +90,7 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
           <div className="empty-state">
             <div className="empty-icon"><FileText size={21} /></div>
             <strong>{invoices.length === 0 ? 'No QuickFile invoices yet' : 'Nothing in this view'}</strong>
-            <p>Mark a job as done to create an invoice. QuickFile marks it paid here when the customer pays.</p>
+            <p>Mark a job as done, then send the invoice to QuickFile or keep it in MyPurePlan. QuickFile marks its own invoices paid here when the customer pays.</p>
           </div>
         )}
       </div>

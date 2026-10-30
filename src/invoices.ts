@@ -15,6 +15,8 @@ export type InvoiceRecord = {
   amount: number;
   quickfileInvoiceId: number;
   quickfileInvoiceNumber: string | null;
+  /** Missing on older rows. A negative id is a local invoice. */
+  source?: 'quickfile' | 'local';
   issuedAt: string;
   dueAt: string | null;
   status: InvoiceStatus;
@@ -221,6 +223,7 @@ function rowToInvoice(row: Record<string, unknown>): InvoiceRecord {
     amount: Number(row.amount || 0),
     quickfileInvoiceId: Number(row.quickfile_invoice_id),
     quickfileInvoiceNumber: row.quickfile_invoice_number ? String(row.quickfile_invoice_number) : null,
+    source: String(row.source || '') === 'local' || Number(row.quickfile_invoice_id) < 0 ? 'local' : 'quickfile',
     issuedAt: String(row.issued_at || ''),
     dueAt: row.due_at ? String(row.due_at).slice(0, 10) : null,
     status: status === 'paid' || status === 'void' ? status : 'unpaid',
@@ -242,6 +245,7 @@ function toDbRow(businessId: string, invoice: InvoiceRecord) {
     amount: Number.isFinite(invoice.amount) ? invoice.amount : 0,
     quickfile_invoice_id: invoice.quickfileInvoiceId,
     quickfile_invoice_number: invoice.quickfileInvoiceNumber,
+    source: invoice.source === 'local' || invoice.quickfileInvoiceId < 0 ? 'local' : 'quickfile',
     issued_at: invoice.issuedAt,
     due_at: invoice.dueAt,
     status: invoice.status,
