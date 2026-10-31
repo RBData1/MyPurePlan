@@ -39,6 +39,7 @@ type Props = {
   min?: string;
   id?: string;
   onIsoChange?: (isoDate: string) => void;
+  'aria-label'?: string;
 };
 
 export default function UkDateInput({
@@ -49,6 +50,7 @@ export default function UkDateInput({
   min,
   id,
   onIsoChange,
+  'aria-label': ariaLabel,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const controlled = value !== undefined;
@@ -105,15 +107,8 @@ export default function UkDateInput({
     setDisplay(next);
 
     const parsed = parseUkDate(next);
-    if (parsed) {
-      if (min && parsed < min) {
-        commitIso('', false);
-        return;
-      }
-      commitIso(parsed);
-      return;
-    }
-    commitIso('', false);
+    if (!parsed || (min && parsed < min)) return;
+    commitIso(parsed);
   }
 
   function openPicker() {
@@ -170,18 +165,18 @@ export default function UkDateInput({
         inputMode="numeric"
         autoComplete="off"
         placeholder="DD/MM/YYYY"
+        aria-label={ariaLabel}
         value={display}
         onChange={(e) => applyDisplay(e.target.value)}
         onBlur={() => {
           const parsed = parseUkDate(display);
-          if (parsed) {
-            if (min && parsed < min) {
-              commitIso('', false);
-              return;
-            }
+          if (parsed && !(min && parsed < min)) {
             setDisplay(formatUkDate(parsed));
             commitIso(parsed);
+            return;
           }
+          const fallback = (controlled ? value : isoValue) || '';
+          setDisplay(fallback ? formatUkDate(fallback) : '');
         }}
         required={required}
         pattern="\d{2}/\d{2}/\d{4}"

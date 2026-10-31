@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { invoiceIsOverdue, type InvoiceRecord } from './invoices';
+import { invoiceDueAt, type InvoiceRecord } from './invoices';
 
 type Period = 'week' | 'month' | 'quarter' | 'year';
 
@@ -141,21 +141,21 @@ function Ring({ parts, label }: { parts: { value: number; color: string }[]; lab
   const center = size / 2;
   const radius = 58;
   const circumference = 2 * Math.PI * radius;
-  const gap = active.length > 1 ? 12 : 0;
-  const available = circumference - gap * active.length;
   const start = circumference / 4;
-  let cursor = gap / 2;
+  let cursor = 0;
 
   return (
     <svg className="finance-ring" viewBox={`0 0 ${size} ${size}`} role="img" aria-label={label}>
-      <circle cx={center} cy={center} r={radius} fill="none" stroke="#e7edf5" strokeWidth="16" />
+      {total <= 0 && <circle cx={center} cy={center} r={radius} fill="none" stroke="#e7edf5" strokeWidth="16" />}
       {total > 0 && active.length === 1 ? (
         <circle cx={center} cy={center} r={radius} fill="none" stroke={active[0].color} strokeWidth="16" />
-      ) : active.map(part => {
-        const length = (part.value / total) * available;
+      ) : active.map((part, index) => {
+        const length = (part.value / total) * circumference;
+        const overlap = index < active.length - 1 ? 0.75 : 0;
+        const draw = Math.min(circumference, length + overlap);
         const offset = start - cursor;
-        cursor += length + gap;
-        return <circle key={part.color} cx={center} cy={center} r={radius} fill="none" stroke={part.color} strokeWidth="16" strokeDasharray={`${length} ${circumference - length}`} strokeDashoffset={offset} />;
+        cursor += length;
+        return <circle key={part.color} cx={center} cy={center} r={radius} fill="none" stroke={part.color} strokeWidth="16" strokeDasharray={`${draw} ${circumference - draw}`} strokeDashoffset={offset} />;
       })}
       <text x={center} y={center - 4} textAnchor="middle" className={`finance-ring-value${label.length > 3 ? ' is-compact' : ''}`}>{total > 0 ? label : '—'}</text>
       <text x={center} y={center + 16} textAnchor="middle" className="finance-ring-caption">{total > 0 ? 'collected' : 'nothing billed'}</text>
@@ -163,8 +163,12 @@ function Ring({ parts, label }: { parts: { value: number; color: string }[]; lab
   );
 }
 
-function splitBilledJobs(jobs: FinanceJob[], invoices: InvoiceRecord[]) {
+function splitBilledJobs(jobs: FinanceJob[], invoices: InvoiceRecord[], today = todayIso()) {
   const byInvoice = new Map(invoices.map(invoice => [invoice.quickfileInvoiceId, invoice]));
+  const byAppointment = new Map<string, InvoiceRecord>();
+  for (const invoice of invoices) {
+    if (invoice.appointmentId && !byAppointment.has(invoice.appointmentId)) byAppointment.set(invoice.appointmentId, invoice);
+  }
   let collected = 0;
   let open = 0;
   let overdue = 0;
@@ -174,8 +178,15 @@ function splitBilledJobs(jobs: FinanceJob[], invoices: InvoiceRecord[]) {
       collected += price;
       continue;
     }
-    const invoice = job.invoiceId == null ? undefined : byInvoice.get(job.invoiceId);
-    if (invoice && invoice.status !== 'void' && invoiceIsOverdue(invoice)) overdue += price;
+    const invoice = (job.invoiceId != null ? byInvoice.get(job.invoiceId) : undefined) || byAppointment.get(job.id);
+    if (invoice?.status === 'void') {
+      open += price;
+      continue;
+    }
+    const due = invoice && invoice.status !== 'paid' && invoice.dueAt
+      ? invoice.dueAt.slice(0, 10)
+      : invoiceDueAt(invoice?.issuedAt || job.date);
+    if (due && due < today) overdue += price;
     else open += price;
   }
   const billed = collected + open + overdue;
@@ -248,7 +259,7 @@ export default function FinanceCharts({
         <section className="panel finance-chart-card">
           <div className="finance-chart-head">
             <h2>Collected</h2>
-            <p>The same jobs as the totals above. Collected, open and overdue add up to billed.</p>
+            <p>The same jobs as the totals above. Unpaid work is overdue 14 days after the invoice date, or after the job date when there is no invoice.</p>
           </div>
           <div className="finance-donut-layout">
             <Ring
