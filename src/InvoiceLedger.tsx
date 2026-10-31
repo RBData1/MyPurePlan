@@ -1,6 +1,25 @@
-import { FileText, RefreshCw } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ChevronDown, FileText, RefreshCw } from 'lucide-react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { invoiceIsOverdue, type InvoiceRecord } from './invoices';
+
+export function Fold({ title, summary, extra, children }: { title: string; summary: string; extra?: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className={`panel table-panel finance-fold${open ? ' is-open' : ''}`}>
+      <div className="panel-heading finance-fold-head">
+        <button type="button" className="finance-fold-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+          <span>
+            <h2>{title}</h2>
+            <p>{summary}</p>
+          </span>
+          <ChevronDown size={18} />
+        </button>
+        {open && extra ? <div className="heading-actions">{extra}</div> : null}
+      </div>
+      {open ? children : null}
+    </section>
+  );
+}
 
 function money(amount: number) {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 2 }).format(amount || 0);
@@ -33,22 +52,21 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
   const overdueAmount = counts.overdue.reduce((sum, invoice) => sum + invoice.amount, 0);
 
   return (
-    <div className="panel table-panel" style={{ marginBottom: 18 }}>
-      <div className="panel-heading padded-heading">
-        <div>
-          <h2>Invoices</h2>
-          <p>{counts.unpaid.length} open · {money(openAmount)} · {counts.overdue.length} overdue · {money(overdueAmount)} · {counts.paid.length} paid</p>
-        </div>
-        <div className="heading-actions">
+    <Fold
+      title="Invoices"
+      summary={`${counts.unpaid.length} open · ${money(openAmount)} · ${counts.overdue.length} overdue · ${money(overdueAmount)} · ${counts.paid.length} paid`}
+      extra={(
+        <>
           {onCheck && <button type="button" className="button secondary" disabled={checking || invoices.every(invoice => invoice.status !== 'unpaid' || invoice.quickfileInvoiceId < 0 || invoice.source === 'local')} onClick={onCheck}><RefreshCw size={15} /> {checking ? 'Checking…' : 'Check QuickFile'}</button>}
           <div className="segmented">
-          <button type="button" className={filter === 'open' ? 'chosen' : ''} onClick={() => setFilter('open')}>Open</button>
-          <button type="button" className={filter === 'overdue' ? 'chosen' : ''} onClick={() => setFilter('overdue')}>Overdue</button>
-          <button type="button" className={filter === 'paid' ? 'chosen' : ''} onClick={() => setFilter('paid')}>Paid</button>
-          <button type="button" className={filter === 'all' ? 'chosen' : ''} onClick={() => setFilter('all')}>All</button>
+            <button type="button" className={filter === 'open' ? 'chosen' : ''} onClick={() => setFilter('open')}>Open</button>
+            <button type="button" className={filter === 'overdue' ? 'chosen' : ''} onClick={() => setFilter('overdue')}>Overdue</button>
+            <button type="button" className={filter === 'paid' ? 'chosen' : ''} onClick={() => setFilter('paid')}>Paid</button>
+            <button type="button" className={filter === 'all' ? 'chosen' : ''} onClick={() => setFilter('all')}>All</button>
           </div>
-        </div>
-      </div>
+        </>
+      )}
+    >
       <div className="table-wrap">
         <table>
           <thead>
@@ -94,6 +112,6 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
           </div>
         )}
       </div>
-    </div>
+    </Fold>
   );
 }
