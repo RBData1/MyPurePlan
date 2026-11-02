@@ -1,5 +1,5 @@
-import type { DragEvent, ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, Search, Upload, Wrench, X } from 'lucide-react';
+import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
+import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, Search, StickyNote, Upload, Wrench, X } from 'lucide-react';
 import UkDateInput from './UkDateInput';
 
 export type ScheduleJob = {
@@ -11,6 +11,7 @@ export type ScheduleJob = {
   price: number;
   address: string;
   notes?: string;
+  customerNotes?: string;
   missingFromSetmore?: boolean;
 };
 
@@ -107,7 +108,12 @@ function tally(jobs: ScheduleJob[]) {
   return { count: jobs.length, amount: jobs.reduce((sum, job) => sum + job.price, 0) };
 }
 
+function hasNote(value?: string) {
+  return Boolean(value && value.trim());
+}
+
 export default function ScheduleBoard(props: Props) {
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const week = weekOf(props.selectedDate);
   const month = monthGrid(props.selectedDate);
   const selectedMonth = new Date(`${props.selectedDate}T12:00:00`).getMonth();
@@ -126,6 +132,19 @@ export default function ScheduleBoard(props: Props) {
       : 'week';
   const rangeDates = rangeKind === 'day' ? [props.selectedDate] : rangeKind === 'month' ? monthDates(props.selectedDate) : week;
   const rangeJobs = props.jobs.filter(job => rangeDates.includes(job.date));
+  const rangeKey = `${rangeKind}:${rangeDates[0] || ''}:${rangeDates[rangeDates.length - 1] || ''}`;
+  useEffect(() => {
+    setFocusedId(current => {
+      if (!current) return null;
+      const job = props.jobs.find(item => item.id === current);
+      return job && rangeDates.includes(job.date) ? current : null;
+    });
+  }, [rangeKey, props.jobs]);
+  const focusedJob = focusedId ? rangeJobs.find(job => job.id === focusedId) : undefined;
+  const notedJobs = rangeJobs
+    .filter(job => hasNote(job.notes) || hasNote(job.customerNotes))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const panelJobs = focusedJob ? [focusedJob] : notedJobs;
   const rangeTotal = tally(rangeJobs);
   const pastTotal = tally(rangeJobs.filter(job => job.date < props.today));
   const laterTotal = tally(rangeJobs.filter(job => job.date >= props.today));
@@ -144,15 +163,16 @@ export default function ScheduleBoard(props: Props) {
   const card = (job: ScheduleJob) => (
     <div
       key={job.id}
-      className={`schedule-item schedule-item-clickable board-job outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}`}
+      className={`schedule-item schedule-item-clickable board-job outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
       draggable
       role="button"
       tabIndex={0}
       onDragStart={event => props.onDragStart(event, `appt:${job.id}`)}
       onDragOver={props.onDragOver}
       onDrop={event => props.onDropJob(event, job.id)}
-      onClick={() => props.onOpenJob(job)}
-      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onOpenJob(job); } }}
+      onClick={() => setFocusedId(current => current === job.id ? null : job.id)}
+      onDoubleClick={() => props.onOpenJob(job)}
+      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setFocusedId(current => current === job.id ? null : job.id); } }}
     >
       <div className="time-col"><strong>{props.timeRange(job)}</strong></div>
       <div className="schedule-details">
@@ -261,7 +281,7 @@ export default function ScheduleBoard(props: Props) {
 
           {props.view === 'calendar' && props.mode !== 'Day' && (
             <>
-              <div className="calendar-weekday-row">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => <span key={day}>{day}</span>)}</div>
+              {props.mode === 'Month' && <div className="calendar-weekday-row">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => <span key={day}>{day}</span>)}</div>}
               <div className={`calendar-grid ${props.mode === 'Month' ? 'calendar-grid-month' : 'calendar-grid-week'}`}>
                 {(props.mode === 'Month' ? month : week).map(date => {
                   const dayJobs = jobsOn(date);
@@ -277,16 +297,17 @@ export default function ScheduleBoard(props: Props) {
                       onDragOver={props.onDragOver}
                       onDrop={event => props.onDropDay(event, date)}
                     >
-                      <div className="day-head"><span>{props.mode === 'Week' ? weekday(date, 'short') : ''}</span><strong>{new Date(`${date}T12:00:00`).getDate()}</strong></div>
+                      <div className="day-head">{props.mode === 'Week' && <span>{weekday(date, 'short')}</span>}<strong>{new Date(`${date}T12:00:00`).getDate()}</strong></div>
                       <div className="day-events">
                         {dayJobs.map(job => (
                           <div
                             key={job.id}
                             draggable
-                            className={`event-chip outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}`}
+                            className={`event-chip outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
                             title={job.missingFromSetmore ? 'Not in Setmore' : undefined}
                             onDragStart={event => { event.stopPropagation(); props.onDragStart(event, `appt:${job.id}`); }}
-                            onClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
+                            onClick={event => { event.stopPropagation(); setFocusedId(current => current === job.id ? null : job.id); }}
+                            onDoubleClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                           >
                             <b>{job.time}</b> {props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
                           </div>
@@ -300,6 +321,48 @@ export default function ScheduleBoard(props: Props) {
             </>
           )}
         </div>
+
+        <aside className="board-notes-panel" aria-label="Appointment notes">
+          <div className="unassigned-rail-head">
+            <h3><StickyNote size={15} /> Notes</h3>
+            <span>{focusedJob ? 1 : notedJobs.length}</span>
+          </div>
+          <p className="queue-hint">
+            {focusedJob
+              ? `${props.customerName(focusedJob)} · ${props.dateLabel(focusedJob.date)}`
+              : `Appointments in this ${rangeKind}`}
+          </p>
+          {focusedJob && (
+            <button type="button" className="button tiny secondary notes-range-btn" onClick={() => setFocusedId(null)}>All in this view</button>
+          )}
+          <div className="notes-window-list">
+            {panelJobs.length === 0 && (
+              <div className="day-panel-empty">{focusedJob ? 'No notes for this appointment.' : 'No notes on appointments in this range.'}</div>
+            )}
+            {panelJobs.map((job, index) => {
+              const appointmentNote = job.notes?.trim() || '';
+              const customerNote = job.customerNotes?.trim() || '';
+              const showDay = rangeKind !== 'day' && (index === 0 || panelJobs[index - 1].date !== job.date);
+              return (
+                <div key={job.id} className="notes-window-entry">
+                  {showDay ? <div className="notes-window-day">{weekday(job.date, 'short')} {props.dateLabel(job.date)}</div> : null}
+                <article className={`notes-window-card${focusedId === job.id ? ' is-selected' : ''}`}>
+                  <div className="notes-window-head">
+                    <button type="button" className="notes-window-open" onClick={() => setFocusedId(job.id)}>
+                      <strong>{props.customerName(job)}</strong>
+                      <span>{rangeKind === 'day' ? props.timeRange(job) : job.time} · {job.service}</span>
+                    </button>
+                    <button type="button" className="button tiny secondary" onClick={() => props.onOpenJob(job)}>Open</button>
+                  </div>
+                  {appointmentNote ? <p className="notes-window-note"><span>{appointmentNote}</span></p> : null}
+                  {customerNote ? <p className="notes-window-note is-customer"><em>Customer</em><span>{customerNote}</span></p> : null}
+                  {!appointmentNote && !customerNote ? <p className="notes-window-empty">No notes for this appointment.</p> : null}
+                </article>
+                </div>
+              );
+            })}
+          </div>
+        </aside>
 
         {props.planOpen && (
           <aside className="board-plan">
