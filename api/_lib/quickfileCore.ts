@@ -185,6 +185,9 @@ export type QuickFileInvoicePayment = {
   state: 'paid' | 'unpaid' | 'part' | 'void';
   paidAt: string | null;
   paidAmount: number | null;
+  clientName: string | null;
+  address: string | null;
+  total: number | null;
 };
 
 function quickFileDay(value: string | null) {
@@ -213,10 +216,14 @@ export async function fetchQuickFileInvoicePayments(creds: QuickFileCredentials,
     if (!status) throw new Error('QuickFile did not return an invoice status. Enable Invoice_Get on your QuickFile app, then try again.');
     const paidAt = quickFileDay(findStringField(details, ['PaymentDate', 'PaidDate', 'DatePaid', 'LastPaymentDate']));
     const paidAmount = findNumericField(details, ['AmountPaid', 'PaidAmount', 'TotalPaid']);
-    if (status === 'PAIDFULL' || status === 'PAID') out.push({ invoiceId, state: 'paid', paidAt, paidAmount });
-    else if (status === 'PAIDPART') out.push({ invoiceId, state: 'part', paidAt, paidAmount });
-    else if (status === 'DELETED') out.push({ invoiceId, state: 'void', paidAt: null, paidAmount: null });
-    else out.push({ invoiceId, state: 'unpaid', paidAt: null, paidAmount: null });
+    const clientName = String(details?.ClientCompanyName || '').trim() || null;
+    const address = String(details?.ClientAddress || '').replace(/<br\s*\/?>/gi, ', ').replace(/\s+,/g, ',').replace(/,\s*,/g, ', ').replace(/\s+/g, ' ').trim() || null;
+    const total = findNumericField(details, ['TotalAmount', 'InvoiceTotal', 'GrossAmount']);
+    const identity = { clientName, address, total };
+    if (status === 'PAIDFULL' || status === 'PAID') out.push({ invoiceId, state: 'paid', paidAt, paidAmount, ...identity });
+    else if (status === 'PAIDPART') out.push({ invoiceId, state: 'part', paidAt, paidAmount, ...identity });
+    else if (status === 'DELETED') out.push({ invoiceId, state: 'void', paidAt: null, paidAmount: null, ...identity });
+    else out.push({ invoiceId, state: 'unpaid', paidAt: null, paidAmount: null, ...identity });
   }
   return out;
 }

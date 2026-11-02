@@ -120,7 +120,30 @@ type InvoicedVisit = {
   quickfileInvoiceId?: number | null;
   quickfileInvoiceNumber?: string | null;
   quickfileInvoicedAt?: string | null;
+  address?: string;
 };
+
+/**
+ * Paid or open QuickFile invoices that are not on any visit, while that job
+ * date still has a visit with no real invoice. A stored client name that does
+ * not match that visit is refreshed from QuickFile before linking.
+ */
+export function invoicesNeedingQuickFileIdentity<T extends InvoicedVisit>(
+  appointments: T[],
+  invoices: InvoiceRecord[],
+  nameOf: (customerId: string) => string,
+): InvoiceRecord[] {
+  const person = (customerId: string) => visitLabel(nameOf(customerId));
+  return invoices.filter(invoice => {
+    if (invoice.source === 'local' || invoice.quickfileInvoiceId <= 0 || invoice.status === 'void' || !invoice.jobDate) return false;
+    if (appointments.some(job => job.status !== 'Cancelled' && job.quickfileInvoiceId === invoice.quickfileInvoiceId)) return false;
+    const free = appointments.filter(job => job.status !== 'Cancelled' && job.date === invoice.jobDate && (job.quickfileInvoiceId == null || job.quickfileInvoiceId < 0));
+    if (!free.length) return false;
+    const wanted = visitLabel(invoice.customerName);
+    const named = wanted ? free.filter(job => person(job.customerId) === wanted && invoiceServiceMatches(invoice.service, job.service)) : [];
+    return named.length !== 1;
+  }).slice(0, 20);
+}
 
 /**
  * A Setmore import can replace the visit id while the invoice register still
@@ -131,31 +154,47 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
   appointments: T[],
   invoices: InvoiceRecord[],
   nameOf: (customerId: string) => string,
-): { appointments: T[]; invoices: InvoiceRecord[]; removedIds: string[] } {
+): { appointments: T[]; invoices: InvoiceRecord[]; removedIds: string[]; removedLocalInvoiceIds: number[] } {
   const person = (customerId: string) => visitLabel(nameOf(customerId));
   const next = appointments.map(appointment => ({ ...appointment }));
   const removed = new Set<string>();
+  const removedLocalInvoiceIds = new Set<number>();
   let appointmentChanged = false;
   let invoiceChanged = false;
   const invoicesNext = invoices.map(invoice => ({ ...invoice }));
   const holdersOf = (invoiceId: number) => next.filter(appointment => !removed.has(appointment.id) && appointment.quickfileInvoiceId === invoiceId);
+  const freeFor = (invoice: InvoiceRecord, appointment: T) => {
+    if (removed.has(appointment.id) || appointment.status === 'Cancelled') return false;
+    const current = appointment.quickfileInvoiceId;
+    if (invoice.quickfileInvoiceId > 0) return current == null || current < 0;
+    return !current;
+  };
 
   for (const invoice of invoicesNext) {
     if (invoice.status === 'void' || !invoice.jobDate || holdersOf(invoice.quickfileInvoiceId).length) continue;
     const wanted = visitLabel(invoice.customerName);
-    if (!wanted) continue;
-    const candidates = next.filter(appointment => {
-      if (removed.has(appointment.id) || appointment.status === 'Cancelled' || appointment.quickfileInvoiceId) return false;
-      return appointment.date === invoice.jobDate && person(appointment.customerId) === wanted && invoiceServiceMatches(invoice.service, appointment.service);
-    });
+    const place = visitLabel(invoice.address);
+    const sameSlot = (appointment: T) => appointment.date === invoice.jobDate && invoiceServiceMatches(invoice.service, appointment.service);
+    let candidates = wanted
+      ? next.filter(appointment => freeFor(invoice, appointment) && sameSlot(appointment) && person(appointment.customerId) === wanted)
+      : [];
+    if (candidates.length !== 1 && place) {
+      const byAddress = next.filter(appointment => freeFor(invoice, appointment) && sameSlot(appointment) && visitLabel(appointment.address || '') === place);
+      if (byAddress.length === 1) candidates = byAddress;
+    }
     if (candidates.length !== 1) continue;
     const target = candidates[0];
+    if (target.quickfileInvoiceId != null && target.quickfileInvoiceId < 0) removedLocalInvoiceIds.add(target.quickfileInvoiceId);
     target.quickfileInvoiceId = invoice.quickfileInvoiceId;
     target.quickfileInvoiceNumber = invoice.quickfileInvoiceNumber;
     target.quickfileInvoicedAt = invoice.issuedAt || target.quickfileInvoicedAt || null;
     if (target.status !== 'Cancelled') target.status = 'Completed';
     if (invoice.appointmentId !== target.id) {
       invoice.appointmentId = target.id;
+      invoiceChanged = true;
+    }
+    if (wanted && person(target.customerId) !== wanted) {
+      invoice.customerName = nameOf(target.customerId) || invoice.customerName;
       invoiceChanged = true;
     }
     appointmentChanged = true;
@@ -191,13 +230,17 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
     invoiceChanged = true;
   }
 
-  if (!appointmentChanged && removed.size === 0 && !invoiceChanged) {
-    return { appointments, invoices, removedIds: [] };
+  const keptInvoices = removedLocalInvoiceIds.size
+    ? (invoiceChanged ? invoicesNext : invoices).filter(invoice => !removedLocalInvoiceIds.has(invoice.quickfileInvoiceId))
+    : (invoiceChanged ? invoicesNext : invoices);
+  if (!appointmentChanged && removed.size === 0 && !invoiceChanged && !removedLocalInvoiceIds.size) {
+    return { appointments, invoices, removedIds: [], removedLocalInvoiceIds: [] };
   }
   return {
     appointments: next.filter(appointment => !removed.has(appointment.id)),
-    invoices: invoiceChanged ? invoicesNext : invoices,
+    invoices: keptInvoices,
     removedIds: [...removed],
+    removedLocalInvoiceIds: [...removedLocalInvoiceIds],
   };
 }
 

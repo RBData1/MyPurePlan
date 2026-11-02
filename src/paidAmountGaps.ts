@@ -26,7 +26,7 @@ function moneyClose(left: number, right: number) {
   return Math.abs(left - right) < 0.005;
 }
 
-/** Paid QuickFile invoices whose recorded amount does not match the current schedule. */
+/** Paid QuickFile invoices whose linked appointments do not match the recorded amount. */
 export function findPaidAmountGaps(jobs: ScheduleJobMoney[], invoices: InvoiceRecord[]): PaidAmountGap[] {
   const gaps: PaidAmountGap[] = [];
   for (const invoice of invoices) {
@@ -34,6 +34,7 @@ export function findPaidAmountGaps(jobs: ScheduleJobMoney[], invoices: InvoiceRe
     const linked = jobs
       .filter(job => job.quickfileInvoiceId === invoice.quickfileInvoiceId)
       .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time) || a.service.localeCompare(b.service) || a.id.localeCompare(b.id));
+    if (linked.length === 0) continue;
     const scheduleTotal = linked.reduce((sum, job) => sum + (Number(job.price) || 0), 0);
     const quickfilePaid = invoice.paidAmount == null ? invoice.amount : invoice.paidAmount;
     if (moneyClose(scheduleTotal, invoice.amount) && moneyClose(scheduleTotal, quickfilePaid)) continue;
