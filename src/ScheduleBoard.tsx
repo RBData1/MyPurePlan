@@ -217,7 +217,7 @@ export default function ScheduleBoard(props: Props) {
           <span>{props.dateLabel(date)}</span>
           <em>{dayJobs.length} job{dayJobs.length === 1 ? '' : 's'} · {props.money(dayJobs.reduce((sum, job) => sum + job.price, 0))}</em>
         </div>
-        {dayJobs.length === 0 ? <div className="schedule-day-empty">{emptyText}</div> : dayJobs.map(card)}
+        {dayJobs.length === 0 ? <div className="schedule-day-empty">{emptyText}</div> : dayJobs.map(job => card(job))}
       </section>
     );
   };
