@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, Search, StickyNote, Upload, Wrench, X } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, Search, StickyNote, Upload, Wrench, X } from 'lucide-react';
 import UkDateInput from './UkDateInput';
 
 export type ScheduleJob = {
@@ -48,6 +48,8 @@ type Props = {
   onAdd: (customerId?: string) => void;
   onImport: () => void;
   importing: boolean;
+  onCheckQuickFile: () => void;
+  checkingQuickFile: boolean;
   onOpenDay: (date: string) => void;
   onOpenJob: (job: ScheduleJob) => void;
   onDragStart: (event: DragEvent, token: string) => void;
@@ -130,6 +132,7 @@ function hasNote(value?: string) {
   return Boolean(value && value.trim());
 }
 
+
 export default function ScheduleBoard(props: Props) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const week = weekOf(props.selectedDate);
@@ -160,7 +163,7 @@ export default function ScheduleBoard(props: Props) {
   }, [rangeKey, props.jobs]);
   const focusedJob = focusedId ? rangeJobs.find(job => job.id === focusedId) : undefined;
   const notedJobs = rangeJobs
-    .filter(job => hasNote(job.notes) || hasNote(job.customerNotes))
+    .filter(job => hasNote(job.notes))
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const panelJobs = focusedJob ? [focusedJob] : notedJobs;
   const rangeTotal = tally(rangeJobs);
@@ -250,6 +253,7 @@ export default function ScheduleBoard(props: Props) {
             <button type="button" className="button tiny secondary" onClick={() => props.setSelectedDate(props.today)}>Today</button>
           </div>
           <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(!props.planOpen)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
+          <button type="button" className="button secondary" onClick={props.onCheckQuickFile} disabled={props.checkingQuickFile}><RefreshCw size={16} /> {props.checkingQuickFile ? 'Checking…' : 'Check QuickFile'}</button>
           <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importing ? 'Importing…' : 'Import Setmore'}</button>
           <button type="button" className="button primary" onClick={() => props.onAdd()}><Plus size={16} /> Appointment</button>
         </div>
@@ -359,7 +363,6 @@ export default function ScheduleBoard(props: Props) {
             )}
             {panelJobs.map((job, index) => {
               const appointmentNote = job.notes?.trim() || '';
-              const customerNote = job.customerNotes?.trim() || '';
               const showDay = rangeKind !== 'day' && (index === 0 || panelJobs[index - 1].date !== job.date);
               return (
                 <div key={job.id} className="notes-window-entry">
@@ -378,8 +381,7 @@ export default function ScheduleBoard(props: Props) {
                     </div>
                   </div>
                   {appointmentNote ? <p className="notes-window-note"><span>{appointmentNote}</span></p> : null}
-                  {customerNote ? <p className="notes-window-note is-customer"><em>Customer</em><span>{customerNote}</span></p> : null}
-                  {!appointmentNote && !customerNote ? <p className="notes-window-empty">No notes for this appointment.</p> : null}
+                  {!appointmentNote ? <p className="notes-window-empty">No notes for this appointment.</p> : null}
                 </article>
                 </div>
               );

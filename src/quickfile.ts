@@ -65,6 +65,15 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+export async function findQuickFileInvoice(conn: QuickFileConnection, invoiceNumber: string) {
+  return postJson<{ invoice: { invoiceId: number; state: 'paid' | 'unpaid' | 'part' | 'void'; paidAt: string | null; paidAmount: number | null; clientName: string | null; address: string | null; total: number | null; invoiceNumber: string; issueDate: string | null } }>('/api/quickfile/invoice-lookup', {
+    accNumber: conn.accNumber,
+    apiKey: conn.apiKey,
+    applicationId: conn.applicationId,
+    invoiceNumber,
+  });
+}
+
 export async function checkQuickFileInvoices(conn: QuickFileConnection, invoiceIds: number[]) {
   return postJson<{ invoices: Array<{ invoiceId: number; state: 'paid' | 'unpaid' | 'part' | 'void'; paidAt: string | null; paidAmount: number | null; clientName: string | null; address: string | null; total: number | null }> }>('/api/quickfile/invoice-status', {
     accNumber: conn.accNumber,

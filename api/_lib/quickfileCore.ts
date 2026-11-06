@@ -228,6 +228,68 @@ export async function fetchQuickFileInvoicePayments(creds: QuickFileCredentials,
   return out;
 }
 
+export type QuickFileFoundInvoice = QuickFileInvoicePayment & {
+  invoiceNumber: string;
+  issueDate: string | null;
+};
+
+function invoiceNumberKey(value: string) {
+  return value.replace(/\D/g, '').replace(/^0+/, '') || '';
+}
+
+function collectInvoiceRecords(result: any): any[] {
+  const out: any[] = [];
+  const visit = (node: any, depth: number) => {
+    if (!node || depth > 6) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    if (node.InvoiceNumber != null || node.InvoiceID != null || node.InvoiceId != null) out.push(node);
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') visit(value, depth + 1);
+    }
+  };
+  visit(result?.Body ?? result, 0);
+  return out;
+}
+
+/** Find a QuickFile invoice that was created earlier, including one typed in by hand. */
+export async function findQuickFileInvoiceByNumber(creds: QuickFileCredentials, invoiceNumber: string): Promise<QuickFileFoundInvoice> {
+  const wanted = invoiceNumber.trim();
+  const key = invoiceNumberKey(wanted);
+  if (!key) throw new Error('Enter the QuickFile invoice number.');
+  const queries = [...new Set([wanted, key.padStart(6, '0'), key])];
+  let invoiceId: number | null = null;
+  let number = wanted;
+  let issueDate: string | null = null;
+  for (const query of queries) {
+    const result: any = await quickfilePost('invoice/search', creds, {
+      SearchParameters: {
+        ReturnCount: 20,
+        Offset: 0,
+        OrderResultsBy: 'InvoiceNumber',
+        OrderDirection: 'DESC',
+        InvoiceType: 'INVOICE',
+        InvoiceNumber: query,
+      },
+    });
+    const match = collectInvoiceRecords(result).find(record => invoiceNumberKey(String(record.InvoiceNumber || '')) === key);
+    const foundId = Number(match?.InvoiceID || match?.InvoiceId);
+    if (match && Number.isFinite(foundId) && foundId > 0) {
+      invoiceId = foundId;
+      number = String(match.InvoiceNumber || query);
+      issueDate = match.IssueDate ? String(match.IssueDate).slice(0, 10) : null;
+      break;
+    }
+  }
+  if (!invoiceId) throw new Error(`QuickFile has no invoice numbered ${wanted}.`);
+  const [details] = await fetchQuickFileInvoicePayments(creds, [invoiceId]);
+  if (!details) throw new Error(`QuickFile invoice ${number} could not be read. Enable Invoice_Search and Invoice_Get on your QuickFile app.`);
+  return { ...details, invoiceNumber: number, issueDate };
+}
+
 export async function testQuickFileConnection(creds: QuickFileCredentials): Promise<{ ok: true; clientsFound: number }> {
   const result: any = await quickfilePost('client/search', creds, {
     SearchParameters: {

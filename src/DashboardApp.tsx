@@ -13,6 +13,7 @@ import {
   isQuickFileConnected,
   readQuickFileConnection,
   checkQuickFileInvoices,
+  findQuickFileInvoice,
   testQuickFileConnection,
   vatModeLabel,
   writeQuickFileConnection,
@@ -743,6 +744,8 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const [invoicingAppointmentId,setInvoicingAppointmentId]=useState<string|null>(null);
  const [invoiceChoiceId,setInvoiceChoiceId]=useState<string|null>(null);
  const [invoiceChoiceKeys,setInvoiceChoiceKeys]=useState<string[]>([]);
+ const [existingInvoiceNumber,setExistingInvoiceNumber]=useState('');
+ const [showExistingInvoice,setShowExistingInvoice]=useState(false);
  const [plannedSetmoreIds,setPlannedSetmoreIds]=useState<string[]>(()=>readPlannedSetmore(businessId));
  const [planCycle,setPlanCycle]=useState<PlanCycle>('all');
  const [planSearch,setPlanSearch]=useState('');
@@ -1286,11 +1289,8 @@ function openEditAppointment(appointment:Appointment){
     .filter(job=>job.customerId===appointment.customerId&&job.date===appointment.date&&job.status!=='Cancelled'&&!job.quickfileInvoiceId)
     .sort((a,b)=>a.time.localeCompare(b.time)||a.id.localeCompare(b.id));
  }
- function serviceChoiceKey(name:string){return name.trim().toLowerCase();}
  function invoiceChoiceItems(appointment:Appointment, list:Appointment[]=appointments){
-  const customer=customers.find(c=>c.id===appointment.customerId);
-  const jobs=sameDayOpenJobs(appointment, list);
-  const items=jobs.map(job=>({
+  return sameDayOpenJobs(appointment, list).map(job=>({
     key:`job:${job.id}`,
     appointmentId:job.id as string|null,
     service:job.service,
@@ -1299,27 +1299,6 @@ function openEditAppointment(appointment:Appointment){
     description:job.address||'',
     date:job.date,
   }));
-  const taken=new Set(items.map(item=>serviceChoiceKey(item.service)));
-  for(const job of list){
-    if(job.customerId!==appointment.customerId||job.date!==appointment.date||!job.quickfileInvoiceId) continue;
-    taken.add(serviceChoiceKey(job.service));
-  }
-  const address=customer?customerProperty(customer):(appointment.address||'');
-  for(const line of customer?.serviceLines||[]){
-    const name=line.service.trim();
-    if(!name||taken.has(serviceChoiceKey(name))) continue;
-    taken.add(serviceChoiceKey(name));
-    items.push({
-      key:`line:${name}`,
-      appointmentId:null,
-      service:name,
-      detail:'On the customer',
-      price:Number(line.price)||0,
-      description:address,
-      date:appointment.date,
-    });
-  }
-  return items;
  }
  function openInvoiceChoice(appointment:Appointment, list:Appointment[]=appointments){
   const items=invoiceChoiceItems(appointment, list);
@@ -1333,6 +1312,8 @@ function openEditAppointment(appointment:Appointment){
   if(invoicingAppointmentId) return;
   setInvoiceChoiceId(null);
   setInvoiceChoiceKeys([]);
+  setExistingInvoiceNumber('');
+  setShowExistingInvoice(false);
  }
  function beginInvoice(appointment:Appointment){
   if(invoicingAppointmentId) return;
@@ -1463,6 +1444,89 @@ function openEditAppointment(appointment:Appointment){
   if(created){
     setInvoiceChoiceId(null);
     setInvoiceChoiceKeys([]);
+    setExistingInvoiceNumber('');
+    setShowExistingInvoice(false);
+  }
+ }
+ async function assignExistingQuickFileInvoice(){
+  const anchor=appointments.find(job=>job.id===invoiceChoiceId);
+  const number=existingInvoiceNumber.trim();
+  if(!anchor||!number||invoicingAppointmentId) return;
+  if(!isQuickFileConnected(quickFile)){flash('Connect QuickFile in Settings before using an existing invoice.');return;}
+  const items=invoiceChoiceItems(anchor);
+  const anchorKey=`job:${anchor.id}`;
+  const selected=items.filter(item=>item.key===anchorKey||invoiceChoiceKeys.includes(item.key));
+  const jobs=selected.flatMap(item=>{
+    if(!item.appointmentId) return [];
+    const job=appointments.find(row=>row.id===item.appointmentId);
+    return job?[job]:[];
+  });
+  const targets=jobs.length?jobs:[anchor];
+  if(targets.some(job=>job.quickfileInvoiceId)){flash('One of these visits already has an invoice.');return;}
+  const customer=customers.find(row=>row.id===targets[0].customerId);
+  if(!customer){flash('Customer not found for this appointment.');return;}
+  setInvoicingAppointmentId(targets[0].id);
+  try{
+    const found=(await findQuickFileInvoice(quickFile, number)).invoice;
+    if(found.state==='paid'||found.state==='part'){
+      flash(`Invoice ${found.invoiceNumber} is already paid in QuickFile, so it cannot be used to charge this visit.`);
+      return;
+    }
+    if(found.state==='void'){
+      flash(`Invoice ${found.invoiceNumber} was deleted in QuickFile.`);
+      return;
+    }
+    const previous=invoices.find(row=>row.quickfileInvoiceId===found.invoiceId);
+    const visitTotal=targets.reduce((sum,job)=>sum+(Number(job.price)||0),0);
+    const amount=found.total??visitTotal;
+    const issued=previous?.issuedAt||(found.issueDate?`${found.issueDate}T12:00:00.000Z`:new Date().toISOString());
+    const targetIds=new Set(targets.map(job=>job.id));
+    const stamped=(job:Appointment):Appointment=>({...job,status:'Completed',quickfileInvoiceId:found.invoiceId,quickfileInvoiceNumber:found.invoiceNumber,quickfileInvoicedAt:issued});
+    setAppointments(prev=>prev.map(job=>{
+      if(targetIds.has(job.id)) return stamped(job);
+      if(job.quickfileInvoiceId===found.invoiceId) return {...job,quickfileInvoiceId:null,quickfileInvoiceNumber:null,quickfileInvoicedAt:null};
+      return job;
+    }));
+    setEditingAppointment(current=>{
+      if(!current) return current;
+      if(targetIds.has(current.id)) return stamped(current);
+      if(current.quickfileInvoiceId===found.invoiceId) return {...current,quickfileInvoiceId:null,quickfileInvoiceNumber:null,quickfileInvoicedAt:null};
+      return current;
+    });
+    const record:InvoiceRecord={
+      id:previous?.id||crypto.randomUUID(),
+      appointmentId:targets[0].id,
+      customerName:customer.name,
+      service:targets.map(job=>job.service).filter(Boolean).join(', '),
+      address:targets[0].address||'',
+      jobDate:targets[0].date,
+      amount,
+      quickfileInvoiceId:found.invoiceId,
+      quickfileInvoiceNumber:found.invoiceNumber,
+      source:'quickfile',
+      issuedAt:issued,
+      dueAt:previous?.dueAt||invoiceDueAt(issued),
+      status:'unpaid',
+      paidAt:null,
+      paidAmount:null,
+      paymentMethod:null,
+    };
+    setInvoices(prev=>combineInvoiceSources([record], prev, []));
+    if(businessId&&supabase){
+      const saveError=await saveInvoices(supabase, businessId, [record]);
+      if(saveError) setInvoiceNotice(`Invoice ${found.invoiceNumber} is on this visit. The register could not be saved: ${saveError}`);
+    }
+    const sameClient=!found.clientName||found.clientName.toLowerCase()===customer.name.toLowerCase();
+    const amountNote=Math.abs(amount-visitTotal)<0.005?'':` The visit is ${money(visitTotal)} and the invoice is ${money(amount)}.`;
+    flash(`Invoice ${found.invoiceNumber} is now on ${customer.name}.${sameClient?'':` QuickFile still shows ${found.clientName} on the document.`}${amountNote}`);
+    setInvoiceChoiceId(null);
+    setInvoiceChoiceKeys([]);
+    setExistingInvoiceNumber('');
+    setShowExistingInvoice(false);
+  }catch(error){
+    flash(error instanceof Error?error.message:'Could not use that QuickFile invoice.', 10000);
+  }finally{
+    setInvoicingAppointmentId(null);
   }
  }
  async function markJobCompleted(id:string){
@@ -1764,6 +1828,13 @@ function openEditAppointment(appointment:Appointment){
   setSelectedDate(date); closeSchedule(); flash('Appointment added successfully.');
  }
  function openCustomerForm(customer?:Customer|null){const original=customer?customers.find(c=>c.id===customer.id)??customer:null;setEditingCustomer(original);setCustomerHistoryPeriod('year');setShowCustomer(true);}
+ function openAppointmentCustomer(){
+  const selected=(document.querySelector('select[name=customerId]') as HTMLSelectElement|null)?.value||'';
+  const id=selected||editingAppointment?.customerId||scheduleCustomerId||'';
+  const customer=customers.find(c=>c.id===id);
+  if(!customer){flash('Choose a customer first.');return;}
+  openCustomerForm(customer);
+ }
  function closeCustomerForm(){setShowCustomer(false);setEditingCustomer(null);}
  const customerHistoryRange=useMemo(()=>customerHistoryPeriod==='all'?null:periodRange(customerHistoryPeriod),[customerHistoryPeriod]);
  const customerHistoryJobs=useMemo(()=>{
@@ -1937,6 +2008,8 @@ function openEditAppointment(appointment:Appointment){
     onAdd={openSchedule}
     onImport={openSetmoreImport}
     importing={importingSetmore}
+    onCheckQuickFile={()=>void checkQuickFilePayments()}
+    checkingQuickFile={checkingQuickFile}
     onOpenDay={openDay}
     onOpenJob={job=>{const appointment=appointments.find(a=>a.id===job.id);if(appointment)openEditAppointment(appointment);}}
     onDragStart={onCalDragStart}
@@ -1980,7 +2053,7 @@ function openEditAppointment(appointment:Appointment){
       {isQuickFileConnected(quickFile)&&<button type="button" className="button secondary" onClick={disconnectQuickFile}>Disconnect</button>}
       <button type="button" className="button secondary" disabled={quickFileBusy||!quickFile.accNumber.trim()||!quickFile.webhookSecret.trim()} onClick={()=>void saveWebhookSecret()}>Save webhook secret</button>
     </div>
-    <div className="info-note"><AlertCircle size={17}/><p>{isQuickFileConnected(quickFile)?<>Connected{quickFile.connectedAt?<> · {formatDateTime(quickFile.connectedAt)}</>:null}. VAT mode: <b>{vatModeLabel(quickFile.vatMode)}</b>. Saved to your account, so QuickFile stays connected the next time you open MyPurePlan. Done asks whether the invoice goes to QuickFile or stays in MyPurePlan. Finance keeps both.</>:<>Not connected. In QuickFile use the legacy Create a QuickFile App, enable Client_Search, Client_Create, Client_Update, Invoice_Create and Invoice_Send, then paste Account number, API key and Application ID here.</>}</p></div>
+    <div className="info-note"><AlertCircle size={17}/><p>{isQuickFileConnected(quickFile)?<>Connected{quickFile.connectedAt?<> · {formatDateTime(quickFile.connectedAt)}</>:null}. VAT mode: <b>{vatModeLabel(quickFile.vatMode)}</b>. Saved to your account, so QuickFile stays connected the next time you open MyPurePlan. Done asks whether the invoice goes to QuickFile or stays in MyPurePlan. Finance keeps both.</>:<>Not connected. In QuickFile use the legacy Create a QuickFile App, enable Client_Search, Client_Create, Client_Update, Invoice_Create, Invoice_Send, Invoice_Search and Invoice_Get, then paste Account number, API key and Application ID here.</>}</p></div>
     <div className="info-note"><AlertCircle size={17}/><p>Payment updates need a QuickFile Power User plan. In QuickFile open Account settings → 3rd party integrations → Webhooks, paste <b>https://mypureplan.vercel.app/api/quickfile/webhook</b>, enable invoice paid and payment events, then paste QuickFile’s webhook secret here and save it. Paid invoices then show as paid in Finance. Overdue means unpaid and more than 14 days old.</p></div>
   </div>
   <div className="panel settings-card"><h2>Booking preferences</h2><p>Choose how appointments are handled.</p><button type="button" className="preference-row preference-toggle" onClick={()=>setSettings(s=>{const next={...s,preventOverlap:!s.preventOverlap};flash(next.preventOverlap?'Overlap protection enabled.':'Overlap protection disabled.');return next;})}><div><strong>Prevent overlapping appointments</strong><span>Do not allow two jobs to start at the same time.</span></div><span className={settings.preventOverlap?'toggle-on':'toggle-off'}><i/></span></button><button type="button" className="preference-row preference-toggle" onClick={()=>setSettings(s=>{const next={...s,useRecurring:!s.useRecurring};flash(next.useRecurring?'Recurring cycles enabled.':'Recurring cycles disabled.');return next;})}><div><strong>Use recurring customer cycles</strong><span>Track regular visits every 4, 6, 8, 10 or 12 weeks.</span></div><span className={settings.useRecurring?'toggle-on':'toggle-off'}><i/></span></button><div className="info-note"><AlertCircle size={17}/><p>Preferences save automatically. Business profile is stored locally{businessId?' and synced to Supabase':''}.</p></div></div></div></div>}
@@ -1988,11 +2061,11 @@ function openEditAppointment(appointment:Appointment){
   <input ref={setmoreFileRef} type="file" accept=".xls,.xlsx,.xlsm,.csv,text/csv,.txt,text/plain,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={e=>void handleSetmoreFile(e.target.files?.[0]??null)}/>
   {notice&&<div className="toast"><CheckCircle2 size={17}/>{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
   {showAdd&&<Modal title={editingAppointment?`Edit appointment · ${customerName(editingAppointment.customerId)}`:scheduleCustomer?`Schedule ${scheduleCustomer.name}`:'New appointment'} subtitle={editingAppointment?'Change the visit, then press Done.':scheduleCustomer?'Review the last visit, then set date and service.':'Add a job to your working calendar.'} onClose={closeSchedule}><form className="modal-form" onSubmit={e=>{e.preventDefault();saveAppointment(e.currentTarget)}} key={`schedule-${scheduleFormKey}-${editingAppointment?.id||scheduleCustomerId||'new'}`}>
-    {editingAppointment&&(()=>{const live=appointments.find(a=>a.id===editingAppointment.id)||editingAppointment;const outcome=jobOutcome(live);return <div className="job-outcome-card"><div className="last-visit-label">Status</div><p className="outcome-help">{outcome==='todo'?'Done saves this visit and marks it finished. You choose whether the invoice goes to QuickFile or stays in MyPurePlan. If the customer has more than one service, you choose which ones to include.':outcome==='done'?(live.quickfileInvoiceId?(live.quickfileInvoiceId<0?'Done · local invoice.':`Done · QuickFile invoice ${live.quickfileInvoiceNumber||live.quickfileInvoiceId}.`):'Done — take payment when the customer pays.'):'Done and paid.'}</p>{live.quickfileInvoiceId&&<p className="outcome-help"><FileText size={14}/> {live.quickfileInvoiceId<0?'Invoiced locally':<>Invoiced in QuickFile{live.quickfileInvoiceNumber?` as ${live.quickfileInvoiceNumber}`:''}</>}{live.quickfileInvoicedAt?` · ${formatDateTime(live.quickfileInvoicedAt)}`:''}</p>}{live.missingFromSetmore&&<p className="outcome-help">This visit is no longer in the latest Setmore report. The invoice stays, and the job stays on the calendar.</p>}</div>;})()}
+    {editingAppointment&&(()=>{const live=appointments.find(a=>a.id===editingAppointment.id)||editingAppointment;const outcome=jobOutcome(live);return <div className="job-outcome-card"><div className="last-visit-label">Status</div><p className="outcome-help">{outcome==='todo'?'Done saves this visit and marks it finished. You choose whether the invoice goes to QuickFile or stays in MyPurePlan. If this customer has more than one visit today, you choose which ones go on the invoice.':outcome==='done'?(live.quickfileInvoiceId?(live.quickfileInvoiceId<0?'Done · local invoice.':`Done · QuickFile invoice ${live.quickfileInvoiceNumber||live.quickfileInvoiceId}.`):'Done — take payment when the customer pays.'):'Done and paid.'}</p>{live.quickfileInvoiceId&&<p className="outcome-help"><FileText size={14}/> {live.quickfileInvoiceId<0?'Invoiced locally':<>Invoiced in QuickFile{live.quickfileInvoiceNumber?` as ${live.quickfileInvoiceNumber}`:''}</>}{live.quickfileInvoicedAt?` · ${formatDateTime(live.quickfileInvoicedAt)}`:''}</p>}{live.missingFromSetmore&&<p className="outcome-help">This visit is no longer in the latest Setmore report. The invoice stays, and the job stays on the calendar.</p>}</div>;})()}
     {!editingAppointment&&scheduleCustomer&&lastVisit&&<div className="last-visit-card"><div className="last-visit-label">Last visit</div><div className="last-visit-grid"><span><strong>Date</strong>{dateLabel(lastVisit.date)}</span><span><strong>Time</strong>{lastVisit.time}</span><span><strong>Price</strong>{money(lastVisit.price)}</span><span><strong>Service</strong>{lastVisit.service}</span></div>{lastVisit.notes?<p className="last-visit-note"><AlertCircle size={14}/><span>{lastVisit.notes}</span></p>:<p className="last-visit-note muted-note">No job notes from the last visit.</p>}{scheduleCustomer.notes?<p className="last-visit-note customer-note-hint"><AlertCircle size={14}/><span><strong>Customer notes:</strong> {scheduleCustomer.notes}</span></p>:null}</div>}
     {!editingAppointment&&scheduleCustomer&&!lastVisit&&<div className="last-visit-card"><div className="last-visit-label">Last visit</div><p className="last-visit-note muted-note">No previous appointment found for this customer.</p>{scheduleCustomer.notes?<p className="last-visit-note customer-note-hint"><AlertCircle size={14}/><span><strong>Customer notes:</strong> {scheduleCustomer.notes}</span></p>:null}</div>}
-    <label>Customer<select name="customerId" required defaultValue={editingAppointment?.customerId||scheduleCustomer?.id||''} onChange={e=>applyAppointmentCustomerDefaults(e.target.value)}><option value="" disabled>Select a customer</option>{(editingAppointment?customers.filter(c=>!c.archived||c.id===editingAppointment.customerId):activeCustomers).map(c=><option value={c.id} key={c.id}>{c.name} — {c.postcode}{c.archived?' (past)':''}</option>)}</select></label><div className="form-row"><label>Date<UkDateInput name="date" defaultValue={editingAppointment?.date||scheduleDate} onIsoChange={isoDate=>{setScheduleDate(isoDate);if(!editingAppointment)return;const updated={...editingAppointment,date:isoDate};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}} required/></label><label>Start time<input name="time" type="time" key={`time-${editingAppointment?.id||'new'}-${scheduleDate}-${suggestedStartTime}`} defaultValue={suggestedStartTime} required onChange={e=>{if(!editingAppointment)return;const nextTime=e.target.value.slice(0,5);if(!/^\d{2}:\d{2}$/.test(nextTime))return;const updated={...editingAppointment,time:nextTime,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label></div><div className="form-row"><label>Service<select name="service" defaultValue={editingAppointment?.service||scheduleCustomer?.service||defaultServiceName} onChange={e=>{const selectedName=e.target.value;const customerId=(document.querySelector('select[name=customerId]') as HTMLSelectElement|null)?.value;if(customerId){applyAppointmentCustomerDefaults(customerId,{serviceName:selectedName,syncServiceSelect:false});return;}const catalogItem=services.find(x=>x.name===selectedName);const priceInput=document.getElementById('appointment-price') as HTMLInputElement|null;const durationInput=document.getElementById('appointment-duration') as HTMLInputElement|null;const cycleInput=document.getElementById('appointment-cycle') as HTMLSelectElement|null;if(durationInput)durationInput.value=String(catalogItem?.duration??30);if(priceInput)priceInput.value=catalogItem&&catalogItem.price>0?String(catalogItem.price):'';if(cycleInput)cycleInput.value='oneoff';}}>{services.map(s=><option key={s.name} value={s.name}>{s.name}{s.name===mainServiceName?' (main)':''}</option>)}</select></label><label>Cycle<select id="appointment-cycle" name="cycle" defaultValue={editingAppointment?.oneOff?'oneoff':(()=>{const line=scheduleCustomer?customerLineFor(scheduleCustomer,editingAppointment?.service||scheduleCustomer.service||defaultServiceName):null;if(line?.oneOff)return 'oneoff';return String(editingAppointment?.frequency||line?.frequency||scheduleCustomer?.frequency||6);})()}><option value="oneoff">One-off</option>{CYCLE_WEEKS.map(w=><option key={w} value={w}>Every {w} weeks</option>)}</select></label></div><div className="form-row"><label>Duration (minutes)<input id="appointment-duration" name="duration" type="number" min="10" step="5" defaultValue={editingAppointment?.duration??scheduleCustomer?.duration??defaultService?.duration??30} required onChange={e=>{if(!editingAppointment)return;const nextDuration=Math.max(5,Number(e.target.value)||30);const updated={...editingAppointment,duration:nextDuration,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label><label className="visit-price">Price for this visit (£)<input id="appointment-price" className="price-input" name="price" type="number" min="0" step="0.01" inputMode="decimal" defaultValue={editingAppointment?.price??(scheduleCustomer&&scheduleCustomer.price>0?scheduleCustomer.price:undefined)} placeholder="0.00" required/><small className="field-hint">This visit only — does not change the customer’s regular rate.</small></label></div><label>Job notes (this visit only)<textarea name="notes" rows={2} defaultValue={editingAppointment?.notes||''} placeholder="Notes for this appointment only — not the customer profile notes..."/></label><div className="modal-actions"><button type="button" className="button secondary" onClick={closeSchedule}>Cancel</button>{editingAppointment&&<button type="button" className="button secondary" onClick={()=>{const id=editingAppointment.id;closeSchedule();void removeAppointment(id);}}>Delete</button>}<button className="button primary" type="submit">{editingAppointment?<><Check size={16}/> Done</>:<><Plus size={16}/> Create appointment</>}</button></div></form></Modal>}
-  {showCustomer&&<Modal wide={Boolean(editingCustomer)} title={editingCustomer?(editingCustomer.archived?'Past customer':'Customer'):'Add customer'} subtitle={editingCustomer?(editingCustomer.archived?'This customer is archived. Reactivate them to schedule again.':'Services, visit history, and contact details in one place.'):'Save a customer, property details, and one or more services.'} onClose={closeCustomerForm}><form className="modal-form" key={editingCustomer?.id||'new-customer'} onSubmit={e=>{e.preventDefault();saveCustomerForm(e.currentTarget)}}><label>Customer name<input name="name" defaultValue={editingCustomer?.name||''} placeholder="e.g. Jamie Smith" required/></label><div className="form-row"><label>Email address<input name="email" type="email" defaultValue={editingCustomer?.email||''} placeholder="jamie@example.com"/></label><label>Phone number<input name="phone" defaultValue={editingCustomer?.phone||''} placeholder="07..."/></label></div><label>Additional phone<input name="phone2" defaultValue={editingCustomer?.phone2||''} placeholder="Second number from Setmore"/></label><label>Property address<input name="address" defaultValue={editingCustomer?.address||''} placeholder="House number and street" required/></label><div className="form-row"><label>Town / locality<input name="town" defaultValue={editingCustomer?.town||''} placeholder="e.g. Sidcup" required/></label><label>Postcode<input name="postcode" defaultValue={editingCustomer?.postcode||''} placeholder="DA15 8AB" required/></label></div><CustomerServiceEditor catalog={services} initialLines={editingCustomer?.serviceLines||[]} defaultServiceName={editingCustomer?.service||selectedService||defaultServiceName} allowEmpty={Boolean(editingCustomer)}/><label>Customer notes<textarea name="notes" rows={3} defaultValue={editingCustomer?.notes||''} placeholder="Setmore customer notes — stay on the customer profile, separate from job notes..."/></label><p className="field-hint">Customer notes come from the Setmore customer profile. Job notes on each appointment are separate.</p>
+    <label>Customer<select name="customerId" required defaultValue={editingAppointment?.customerId||scheduleCustomer?.id||''} onChange={e=>applyAppointmentCustomerDefaults(e.target.value)}><option value="" disabled>Select a customer</option>{(editingAppointment?customers.filter(c=>!c.archived||c.id===editingAppointment.customerId):activeCustomers).map(c=><option value={c.id} key={c.id}>{c.name} — {c.postcode}{c.archived?' (past)':''}</option>)}</select></label><div className="form-row"><label>Date<UkDateInput name="date" defaultValue={editingAppointment?.date||scheduleDate} onIsoChange={isoDate=>{setScheduleDate(isoDate);if(!editingAppointment)return;const updated={...editingAppointment,date:isoDate};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}} required/></label><label>Start time<input name="time" type="time" key={`time-${editingAppointment?.id||'new'}-${scheduleDate}-${suggestedStartTime}`} defaultValue={suggestedStartTime} required onChange={e=>{if(!editingAppointment)return;const nextTime=e.target.value.slice(0,5);if(!/^\d{2}:\d{2}$/.test(nextTime))return;const updated={...editingAppointment,time:nextTime,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label></div><div className="form-row"><label>Service<select name="service" defaultValue={editingAppointment?.service||scheduleCustomer?.service||defaultServiceName} onChange={e=>{const selectedName=e.target.value;const customerId=(document.querySelector('select[name=customerId]') as HTMLSelectElement|null)?.value;if(customerId){applyAppointmentCustomerDefaults(customerId,{serviceName:selectedName,syncServiceSelect:false});return;}const catalogItem=services.find(x=>x.name===selectedName);const priceInput=document.getElementById('appointment-price') as HTMLInputElement|null;const durationInput=document.getElementById('appointment-duration') as HTMLInputElement|null;const cycleInput=document.getElementById('appointment-cycle') as HTMLSelectElement|null;if(durationInput)durationInput.value=String(catalogItem?.duration??30);if(priceInput)priceInput.value=catalogItem&&catalogItem.price>0?String(catalogItem.price):'';if(cycleInput)cycleInput.value='oneoff';}}>{services.map(s=><option key={s.name} value={s.name}>{s.name}{s.name===mainServiceName?' (main)':''}</option>)}</select></label><label>Cycle<select id="appointment-cycle" name="cycle" defaultValue={editingAppointment?.oneOff?'oneoff':(()=>{const line=scheduleCustomer?customerLineFor(scheduleCustomer,editingAppointment?.service||scheduleCustomer.service||defaultServiceName):null;if(line?.oneOff)return 'oneoff';return String(editingAppointment?.frequency||line?.frequency||scheduleCustomer?.frequency||6);})()}><option value="oneoff">One-off</option>{CYCLE_WEEKS.map(w=><option key={w} value={w}>Every {w} weeks</option>)}</select></label></div><div className="form-row"><label>Duration (minutes)<input id="appointment-duration" name="duration" type="number" min="10" step="5" defaultValue={editingAppointment?.duration??scheduleCustomer?.duration??defaultService?.duration??30} required onChange={e=>{if(!editingAppointment)return;const nextDuration=Math.max(5,Number(e.target.value)||30);const updated={...editingAppointment,duration:nextDuration,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label><label className="visit-price">Price for this visit (£)<input id="appointment-price" className="price-input" name="price" type="number" min="0" step="0.01" inputMode="decimal" defaultValue={editingAppointment?.price??(scheduleCustomer&&scheduleCustomer.price>0?scheduleCustomer.price:undefined)} placeholder="0.00" required/><small className="field-hint">This visit only — does not change the customer’s regular rate.</small></label></div><label>Job notes (this visit only)<textarea name="notes" rows={2} defaultValue={editingAppointment?.notes||''} placeholder="Notes for this appointment only — not the customer profile notes..."/></label><div className="modal-actions"><button type="button" className="button secondary" onClick={openAppointmentCustomer}><Users size={16}/> Customer card</button><button type="button" className="button secondary" onClick={closeSchedule}>Cancel</button>{editingAppointment&&<button type="button" className="button secondary" onClick={()=>{const id=editingAppointment.id;closeSchedule();void removeAppointment(id);}}>Delete</button>}<button className="button primary" type="submit">{editingAppointment?<><Check size={16}/> Done</>:<><Plus size={16}/> Create appointment</>}</button></div></form></Modal>}
+  {showCustomer&&<Modal wide={Boolean(editingCustomer)} stacked={showAdd} title={editingCustomer?(editingCustomer.archived?'Past customer':'Customer'):'Add customer'} subtitle={editingCustomer?(editingCustomer.archived?'This customer is archived. Reactivate them to schedule again.':'Services, visit history, and contact details in one place.'):'Save a customer, property details, and one or more services.'} onClose={closeCustomerForm}><form className="modal-form" key={editingCustomer?.id||'new-customer'} onSubmit={e=>{e.preventDefault();saveCustomerForm(e.currentTarget)}}><label>Customer name<input name="name" defaultValue={editingCustomer?.name||''} placeholder="e.g. Jamie Smith" required/></label><div className="form-row"><label>Email address<input name="email" type="email" defaultValue={editingCustomer?.email||''} placeholder="jamie@example.com"/></label><label>Phone number<input name="phone" defaultValue={editingCustomer?.phone||''} placeholder="07..."/></label></div><label>Additional phone<input name="phone2" defaultValue={editingCustomer?.phone2||''} placeholder="Second number from Setmore"/></label><label>Property address<input name="address" defaultValue={editingCustomer?.address||''} placeholder="House number and street" required/></label><div className="form-row"><label>Town / locality<input name="town" defaultValue={editingCustomer?.town||''} placeholder="e.g. Sidcup" required/></label><label>Postcode<input name="postcode" defaultValue={editingCustomer?.postcode||''} placeholder="DA15 8AB" required/></label></div><CustomerServiceEditor catalog={services} initialLines={editingCustomer?.serviceLines||[]} defaultServiceName={editingCustomer?.service||selectedService||defaultServiceName} allowEmpty={Boolean(editingCustomer)}/><label>Customer notes<textarea name="notes" rows={3} defaultValue={editingCustomer?.notes||''} placeholder="Setmore customer notes — stay on the customer profile, separate from job notes..."/></label><p className="field-hint">Customer notes come from the Setmore customer profile. Job notes on each appointment are separate.</p>
     {editingCustomer&&<div className="customer-history">
       <div className="customer-history-head">
         <div>
@@ -2018,11 +2091,11 @@ function openEditAppointment(appointment:Appointment){
     <div className="modal-actions"><button type="button" className="button secondary" onClick={closeCustomerForm}>Cancel</button>{editingCustomer&&!editingCustomer.archived&&<button type="button" className="button secondary" onClick={()=>archiveCustomer(editingCustomer.id)}><Archive size={15}/> Move to past</button>}{editingCustomer&&editingCustomer.archived&&<button type="button" className="button secondary" onClick={()=>reactivateCustomer(editingCustomer.id)}><ArchiveRestore size={15}/> Reactivate</button>}{editingCustomer&&<button type="button" className="button secondary" onClick={()=>{const id=editingCustomer.id;closeCustomerForm();void removeCustomer(id);}}>Delete permanently</button>}<button className="button primary" type="submit">{editingCustomer?'Save changes':'Save customer'}</button></div></form></Modal>}
   {showServiceForm&&<Modal title={editingService?'Edit service':'Add service'} subtitle={editingService?'Update the name and colour.':'Create a service customers can be assigned to.'} onClose={()=>{setShowServiceForm(false);setEditingService(null);}}><form className="modal-form" onSubmit={e=>{e.preventDefault();saveServiceForm(e.currentTarget);}}><label>Service name<input name="name" defaultValue={editingService?.name??''} placeholder="e.g. Window cleaning" required/></label><fieldset className="service-color-field"><legend>Colour</legend><input type="hidden" name="color" id="service-color-input" defaultValue={resolveServiceColor(editingService?.color,services.length)}/><div className="service-color-picker">{SERVICE_COLOR_PALETTE.map(hex=>{const selected=resolveServiceColor(editingService?.color,services.length)===hex;return <button key={hex} type="button" className={`service-color-swatch${selected?' is-selected':''}`} style={{background:hex}} aria-label={`Colour ${hex}`} onClick={e=>{const input=e.currentTarget.form?.elements.namedItem('color');if(input instanceof HTMLInputElement){input.value=hex;}e.currentTarget.parentElement?.querySelectorAll('.service-color-swatch').forEach(btn=>btn.classList.remove('is-selected'));e.currentTarget.classList.add('is-selected');}}/>;})}</div></fieldset><div className="modal-actions"><button type="button" className="button secondary" onClick={()=>{setShowServiceForm(false);setEditingService(null);}}>Cancel</button><button className="button primary" type="submit">{editingService?'Save changes':'Add service'}</button></div></form></Modal>}
 
-  {invoiceChoiceId&&(()=>{const anchor=appointments.find(job=>job.id===invoiceChoiceId);if(!anchor)return null;const items=invoiceChoiceItems(anchor);if(!items.length)return null;const anchorKey=`job:${anchor.id}`;const selected=items.filter(item=>item.key===anchorKey||invoiceChoiceKeys.includes(item.key));const total=selected.reduce((sum,item)=>sum+(Number(item.price)||0),0);const busy=Boolean(invoicingAppointmentId);const several=items.length>1;return <div className="modal-backdrop invoice-prompt" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeInvoiceChoice();}}><div className="invoice-prompt-card" role="dialog" aria-modal="true" aria-labelledby="invoice-prompt-title"><h2 id="invoice-prompt-title">QuickFile or local?</h2><p>{customerName(anchor.customerId)} · {dateLabel(anchor.date)} · {money(total)}</p>{several&&<ul className="invoice-choice-lines">{items.map(item=>{const locked=item.key===anchorKey;const checked=locked||invoiceChoiceKeys.includes(item.key);return <li key={item.key} className={locked?'is-current':''}><label><input type="checkbox" checked={checked} disabled={busy||locked} onChange={()=>{if(locked)return;setInvoiceChoiceKeys(prev=>prev.includes(item.key)?prev.filter(key=>key!==item.key):[...prev,item.key]);}}/><span>{item.detail} · {item.service}</span></label><strong>{money(item.price)}</strong></li>;})}</ul>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={closeInvoiceChoice}>Cancel</button><button type="button" className="button secondary" disabled={busy||!selected.length} onClick={()=>void confirmInvoiceChoice('local')}>{busy?'Saving…':'Local'}</button><button type="button" className="button primary" disabled={busy||!selected.length||!isQuickFileConnected(quickFile)} onClick={()=>void confirmInvoiceChoice('quickfile')}>{busy?'Invoicing…':'QuickFile'}</button></div></div></div>;})()}
+  {invoiceChoiceId&&(()=>{const anchor=appointments.find(job=>job.id===invoiceChoiceId);if(!anchor)return null;const items=invoiceChoiceItems(anchor);if(!items.length)return null;const anchorKey=`job:${anchor.id}`;const selected=items.filter(item=>item.key===anchorKey||invoiceChoiceKeys.includes(item.key));const total=selected.reduce((sum,item)=>sum+(Number(item.price)||0),0);const busy=Boolean(invoicingAppointmentId);const several=items.length>1;return <div className="modal-backdrop invoice-prompt" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeInvoiceChoice();}}><div className="invoice-prompt-card" role="dialog" aria-modal="true" aria-labelledby="invoice-prompt-title"><h2 id="invoice-prompt-title">QuickFile or local?</h2><p>{customerName(anchor.customerId)} · {dateLabel(anchor.date)} · {money(total)}</p>{several&&<ul className="invoice-choice-lines">{items.map(item=>{const locked=item.key===anchorKey;const checked=locked||invoiceChoiceKeys.includes(item.key);return <li key={item.key} className={locked?'is-current':''}><label><input type="checkbox" checked={checked} disabled={busy||locked} onChange={()=>{if(locked)return;setInvoiceChoiceKeys(prev=>prev.includes(item.key)?prev.filter(key=>key!==item.key):[...prev,item.key]);}}/><span>{item.detail} · {item.service}</span></label><strong>{money(item.price)}</strong></li>;})}</ul>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={closeInvoiceChoice}>Cancel</button><button type="button" className="button secondary" disabled={busy||!selected.length} onClick={()=>void confirmInvoiceChoice('local')}>{busy?'Saving…':'Local'}</button><button type="button" className="button primary" disabled={busy||!selected.length||!isQuickFileConnected(quickFile)} onClick={()=>void confirmInvoiceChoice('quickfile')}>{busy?'Invoicing…':'QuickFile'}</button></div>{showExistingInvoice?<div className="existing-invoice"><label>Existing QuickFile number<input value={existingInvoiceNumber} onChange={e=>setExistingInvoiceNumber(e.target.value)} placeholder="Invoice number" inputMode="numeric" autoComplete="off" disabled={busy||!isQuickFileConnected(quickFile)}/></label><button type="button" className="button secondary" disabled={busy||!selected.length||!existingInvoiceNumber.trim()||!isQuickFileConnected(quickFile)} onClick={()=>void assignExistingQuickFileInvoice()}>{busy?'Assigning…':'Use this number'}</button><p>Moves that invoice onto this visit. The earlier job stays done, without the invoice. QuickFile keeps the original client on the document.</p></div>:<button type="button" className="existing-invoice-toggle" disabled={busy||!isQuickFileConnected(quickFile)} onClick={()=>setShowExistingInvoice(true)}>Use an existing QuickFile number</button>}</div></div>;})()}
  </div>;
 }
 function Stat({icon,label,value,sub,tone}:{icon:React.ReactNode;label:string;value:string;sub:string;tone:string}){return <div className="stat-card"><div className={`stat-icon tone-${tone}`}>{icon}</div><div className="stat-copy"><span>{label}</span><strong>{value}</strong><small>{sub}</small></div><ArrowUpRight className="stat-arrow" size={15}/></div>}
 function Status({status}:{status:Appointment['status']}){return <span className={`status status-${status.toLowerCase()}`}><i/>{status}</span>}
 function EmptyState({title,text,action,onClick}:{title:string;text:string;action:string;onClick:()=>void}){return <div className="empty-state"><div className="empty-icon"><CalendarDays size={21}/></div><strong>{title}</strong><p>{text}</p><button className="button secondary tiny" onClick={onClick}>{action}</button></div>}
-function Modal({title,subtitle,onClose,children,wide=false}:{title:string;subtitle:string;onClose:()=>void;children:React.ReactNode;wide?:boolean}){return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={`modal ${wide?'modal-wide':''}`} role="dialog" aria-modal="true"><div className="modal-header"><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>{children}</div></div>}
+function Modal({title,subtitle,onClose,children,wide=false,stacked=false}:{title:string;subtitle:string;onClose:()=>void;children:React.ReactNode;wide?:boolean;stacked?:boolean}){return <div className={`modal-backdrop${stacked?' is-stacked':''}`} onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={`modal ${wide?'modal-wide':''}`} role="dialog" aria-modal="true"><div className="modal-header"><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>{children}</div></div>}
 function exportCSV(rows:unknown[]){if(!rows.length)return;const keys=Object.keys(rows[0] as object);const csv=[keys.join(','),...rows.map(row=>keys.map(k=>{let value=String((row as Record<string,unknown>)[k]??'');if(/^\d{4}-\d{2}-\d{2}/.test(value))value=dateLabel(value.slice(0,10));return `"${value.replace(/"/g,'""')}"`;}).join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const a=document.createElement('a');a.href=url;a.download='mypureplan-export.csv';a.click();URL.revokeObjectURL(url)}
