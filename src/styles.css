@@ -272,7 +272,7 @@ td strong{font-size:13px;color:#1f3148}
 .setmore-import-box{display:flex;flex-direction:column;gap:12px;margin-bottom:4px}
 .setmore-import-hint{margin:0;font-size:11px;line-height:1.55;color:#6f7f94}
 .setmore-import-hint strong{color:#3a4f68;font-weight:700}
-.setmore-import-list{margin:0;padding-left:18px;display:grid;gap:6px;font-size:11px;line-height:1.45;color:#53647b}
+.setmore-import-list{margin:0;padding-left:18px;display:grid;gap:6px;font-size:11px;line-height:1.45;color:#53647b}.setmore-import-list a{color:#316de4}
 .setmore-last-import{display:grid;gap:6px;padding:12px 13px;border:1px solid #c9d9f2;border-radius:10px;background:#f4f8ff}
 .setmore-last-import strong{font-size:12px;color:#24384f}
 .setmore-last-import p{margin:0;font-size:11px;line-height:1.5;color:#53647b}
@@ -291,6 +291,9 @@ td strong{font-size:13px;color:#1f3148}
 .button:disabled{opacity:.65;cursor:wait}
 
 .board-heading{align-items:flex-end}
+.board-copy-range{display:flex;flex-wrap:wrap;align-items:end;gap:10px 14px;margin:0 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#f7f9fc}
+.board-copy-range label{display:grid;gap:4px;font-size:12px;font-weight:750;color:#33475f;min-width:140px}
+.board-copy-range span{flex:1 1 180px;font-size:12px;line-height:1.4;color:#5c6e86;padding-bottom:6px}
 .schedule-summary{display:flex;flex-wrap:wrap;gap:12px 0;margin:0 0 14px;padding:12px 16px;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
 .schedule-summary-item{display:grid;gap:2px;min-width:min(100%,180px);padding:0 18px}
 .schedule-summary-item:first-child{padding-left:2px}
@@ -348,6 +351,8 @@ td strong{font-size:13px;color:#1f3148}
 .board-job.is-missing{box-shadow:none;background:#fff8f1}
 .event-chip.is-missing{background:#fff6ea;white-space:normal}
 .chip-missing{display:block;font-size:12px;font-weight:750;color:#8a4b12}
+.invoice-twin-toggle{display:flex;align-items:flex-start;gap:10px;margin:0 0 10px;padding:8px 10px;border:1px dashed #9db7e4;border-radius:10px;background:#f4f8ff;font-size:13px;line-height:1.35;color:#24384f;cursor:pointer}
+.invoice-twin-toggle input{width:16px;height:16px;margin-top:2px;accent-color:#316de4;flex:none}
 .invoice-choice-lines{list-style:none;margin:0 0 4px;padding:0;display:grid;gap:6px}
 .invoice-choice-lines li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#f7f9fc}
 .invoice-choice-lines li.is-current{border-color:#9db7e4;background:#f4f8ff}
@@ -513,3 +518,5 @@ html{scrollbar-gutter:stable}
   .finance-service-row{grid-template-columns:minmax(0,1fr) auto}
   .finance-service-track{grid-column:1 / -1;grid-row:2}
 }
+.calendar-source-switch{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:14px 0 6px}
+.calendar-source-switch span{font-size:13px;color:#5c6e86}

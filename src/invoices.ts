@@ -117,6 +117,8 @@ type InvoicedVisit = {
   service: string;
   status: string;
   setmoreBookingId?: string;
+  squareBookingId?: string;
+  calendarSource?: 'setmore' | 'square';
   quickfileInvoiceId?: number | null;
   quickfileInvoiceNumber?: string | null;
   quickfileInvoicedAt?: string | null;
@@ -203,7 +205,8 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
   const groups = new Map<string, T[]>();
   for (const appointment of next) {
     if (removed.has(appointment.id) || appointment.status === 'Cancelled') continue;
-    const key = `${person(appointment.customerId)}|${appointment.date}|${appointment.time}|${visitLabel(appointment.service)}`;
+    const source = appointment.calendarSource === 'square' || appointment.squareBookingId ? 'square' : 'setmore';
+    const key = `${person(appointment.customerId)}|${appointment.date}|${appointment.time}|${visitLabel(appointment.service)}|${source}`;
     const group = groups.get(key);
     if (group) group.push(appointment);
     else groups.set(key, [appointment]);
@@ -219,10 +222,17 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
         keeper.setmoreBookingId = other.setmoreBookingId;
         appointmentChanged = true;
       }
+      if (!keeper.squareBookingId && other.squareBookingId) {
+        keeper.squareBookingId = other.squareBookingId;
+        keeper.calendarSource = 'square';
+        appointmentChanged = true;
+      }
       removed.add(other.id);
     }
   }
 
+  // Keep the register pointer on any holder. Do not strip the invoice from other
+  // calendar twins that share the same QuickFile number.
   for (const invoice of invoicesNext) {
     const holders = holdersOf(invoice.quickfileInvoiceId);
     if (!holders.length || holders.some(appointment => appointment.id === invoice.appointmentId)) continue;

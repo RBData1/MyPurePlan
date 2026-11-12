@@ -50,6 +50,9 @@ export type ImportAppointment = {
   quickfileInvoicedAt?: string | null;
   /** Invoiced job that the latest Setmore report no longer lists. Kept on the calendar. */
   missingFromSetmore?: boolean;
+  /** Square Appointments id. Setmore import never rewrites these jobs. */
+  squareBookingId?: string;
+  calendarSource?: 'setmore' | 'square';
 };
 
 export type ImportService = { name: string; duration: number; price: number; color?: string };
@@ -917,7 +920,12 @@ function reconcileSetmoreSchedule(
   coverageFrom: string | null,
   coverageTo: string | null,
 ) {
-  const pool = existing.map(a => ({ ...a }));
+  const squareHeld = existing
+    .filter(appointment => appointment.calendarSource === 'square' || appointment.squareBookingId)
+    .map(appointment => ({ ...appointment }));
+  const pool = existing
+    .filter(appointment => !(appointment.calendarSource === 'square' || appointment.squareBookingId))
+    .map(a => ({ ...a }));
   const taken = new Set<number>();
   const consumed = new Set<number>();
   let updated = 0;
@@ -1057,6 +1065,7 @@ function reconcileSetmoreSchedule(
     }
     removed.push(appointment);
   });
+  kept.push(...squareHeld);
   const keptIds = new Set(kept.map(appointment => appointment.id));
   return {
     appointments: kept,

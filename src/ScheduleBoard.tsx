@@ -48,6 +48,15 @@ type Props = {
   onAdd: (customerId?: string) => void;
   onImport: () => void;
   importing: boolean;
+  importLabel: string;
+  source: 'setmore' | 'square';
+  onSource: (source: 'setmore' | 'square') => void;
+  copyFrom?: string;
+  copyTo?: string;
+  onCopyFrom?: (date: string) => void;
+  onCopyTo?: (date: string) => void;
+  onCopySetmore?: () => void;
+  copyingSetmore?: boolean;
   onCheckQuickFile: () => void;
   checkingQuickFile: boolean;
   onOpenDay: (date: string) => void;
@@ -230,9 +239,13 @@ export default function ScheduleBoard(props: Props) {
       <div className="page-heading board-heading">
         <div>
           <h1>Schedule</h1>
-          <p>The round for the day, invoices on each job, and customers still waiting for a visit.</p>
+          <p>{props.source === 'square' ? 'Square Appointments sync both ways. A change here is sent to Square, and a change in Square shows up here. Setmore jobs stay separate. Invoices still go to QuickFile.' : 'The round for the day, invoices on each job, and customers still waiting for a visit.'}</p>
         </div>
         <div className="heading-actions board-actions">
+          <div className="segmented" role="group" aria-label="Calendar source">
+            <button type="button" className={props.source === 'setmore' ? 'chosen' : ''} onClick={() => props.onSource('setmore')}>Setmore</button>
+            <button type="button" className={props.source === 'square' ? 'chosen' : ''} onClick={() => props.onSource('square')}>Square</button>
+          </div>
           <div className="segmented" role="group" aria-label="Schedule layout">
             <button type="button" className={props.view === 'calendar' ? 'chosen' : ''} onClick={() => props.setView('calendar')}><CalendarDays size={15} /> Calendar</button>
             <button type="button" className={props.view === 'list' ? 'chosen' : ''} onClick={() => props.setView('list')}><List size={15} /> List</button>
@@ -254,10 +267,22 @@ export default function ScheduleBoard(props: Props) {
           </div>
           <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(!props.planOpen)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
           <button type="button" className="button secondary" onClick={props.onCheckQuickFile} disabled={props.checkingQuickFile}><RefreshCw size={16} /> {props.checkingQuickFile ? 'Checking…' : 'Check QuickFile'}</button>
-          <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importing ? 'Importing…' : 'Import Setmore'}</button>
+          <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importLabel}</button>
+          {props.source === 'square' && props.onCopySetmore && (
+            <button type="button" className="button secondary" onClick={props.onCopySetmore} disabled={props.copyingSetmore || props.importing}>
+              <Upload size={16} /> {props.copyingSetmore ? 'Copying…' : 'Copy Setmore'}
+            </button>
+          )}
           <button type="button" className="button primary" onClick={() => props.onAdd()}><Plus size={16} /> Appointment</button>
         </div>
       </div>
+      {props.source === 'square' && props.onCopySetmore && props.copyFrom != null && props.copyTo != null && (
+        <div className="board-copy-range">
+          <label>From<UkDateInput name="copySetmoreFromBoard" value={props.copyFrom} aria-label="Copy Setmore from" onIsoChange={date => props.onCopyFrom?.(date)} /></label>
+          <label>To<UkDateInput name="copySetmoreToBoard" value={props.copyTo} aria-label="Copy Setmore to" onIsoChange={date => props.onCopyTo?.(date)} /></label>
+          <span>Copies Setmore visits in this range into Square. Setmore stays unchanged.</span>
+        </div>
+      )}
 
       <div className="schedule-summary" aria-label="Appointments in this view">
         <div className="schedule-summary-item">
