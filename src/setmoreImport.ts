@@ -1,4 +1,5 @@
 /** Parse and merge Setmore appointment / customer exports (CSV or Excel .xls/.xlsx) into MyPurePlan data. */
+import { matchCustomerIndex, mergeDuplicateCustomers } from './customerMerge';
 import { nextServiceColor } from './serviceColors';
 
 import * as XLSX from 'xlsx';
@@ -112,6 +113,11 @@ export type SetmoreImportResult = {
   summary: SetmoreImportSummary;
   /** Appointments removed because they fall inside the report dates and are not in the file. */
   removedAppointments: ImportAppointment[];
+  /** Duplicate customer cards folded into the card that already had the history. */
+  removedCustomerIds: string[];
+  /** Extra copies of the same visit, removed after those cards were joined. */
+  duplicateAppointmentsRemoved: string[];
+  appointmentRedirect: Map<string, string>;
 };
 
 export type SetmoreRow = Record<string, string>;
@@ -475,14 +481,6 @@ function normalizePhone(value: string): string {
   return digits;
 }
 
-function normalizeEmail(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function normalizeName(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
 function moneyNumber(raw: string): number | null {
   if (!raw) return null;
   const cleaned = raw.replace(/[£$€,\s]/g, '').replace(/[^\d.-]/g, '');
@@ -728,42 +726,16 @@ function mergeCustomerFields(existing: ImportCustomer, incoming: Partial<ImportC
   return withServiceLines(merged, lines.length ? lines : existing.serviceLines);
 }
 
-function phonesMatch(a: string, b: string): boolean {
-  const pa = normalizePhone(a);
-  const pb = normalizePhone(b);
-  if (!pa || !pb || pa.length < 7 || pb.length < 7) return false;
-  return pa === pb || pa.endsWith(pb.slice(-10)) || pb.endsWith(pa.slice(-10));
-}
-
-function findCustomerIndex(list: ImportCustomer[], candidate: { name: string; email: string; phone: string; phone2?: string; postcode: string }): number {
-  const email = normalizeEmail(candidate.email);
-  const phone = normalizePhone(candidate.phone);
-  const phone2 = normalizePhone(candidate.phone2 || '');
-  const name = normalizeName(candidate.name);
-  const postcode = candidate.postcode.trim().toUpperCase().replace(/\s+/g, '');
-
-  if (email && looksLikeEmail(candidate.email)) {
-    const byEmail = list.findIndex(c => looksLikeEmail(c.email) && normalizeEmail(c.email) === email);
-    if (byEmail >= 0) return byEmail;
-  }
-  if (phone.length >= 7 || phone2.length >= 7) {
-    const byPhone = list.findIndex(c =>
-      phonesMatch(c.phone, candidate.phone) ||
-      phonesMatch(c.phone2 || '', candidate.phone) ||
-      phonesMatch(c.phone, candidate.phone2 || '') ||
-      phonesMatch(c.phone2 || '', candidate.phone2 || ''),
-    );
-    if (byPhone >= 0) return byPhone;
-  }
-  if (name) {
-    const byNamePostcode = list.findIndex(c => {
-      if (normalizeName(c.name) !== name) return false;
-      if (!postcode) return true;
-      return c.postcode.trim().toUpperCase().replace(/\s+/g, '') === postcode;
-    });
-    if (byNamePostcode >= 0) return byNamePostcode;
-  }
-  return -1;
+function findCustomerIndex(list: ImportCustomer[], candidate: { name: string; email: string; phone: string; phone2?: string; postcode: string; address?: string }): number {
+  return matchCustomerIndex(list, {
+    id: '',
+    name: candidate.name,
+    email: candidate.email,
+    phone: candidate.phone,
+    phone2: candidate.phone2 || '',
+    address: candidate.address || '',
+    postcode: candidate.postcode,
+  });
 }
 
 function appointmentKey(customerId: string, date: string, time: string, service: string): string {
@@ -1126,10 +1098,15 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     );
   }
 
-  const customers = existing.customers.map(c => ({ ...c, serviceLines: [...(c.serviceLines || [])] }));
-  const appointments = existing.appointments.map(a => ({ ...a }));
+  const joined = mergeDuplicateCustomers(
+    existing.customers.map(c => ({ ...c, serviceLines: [...(c.serviceLines || [])] })),
+    existing.appointments.map(a => ({ ...a })),
+    existing.payments.map(p => ({ ...p })),
+  );
+  const customers = joined.customers;
+  const appointments = joined.appointments;
   const services = existing.services.map(s => ({ ...s }));
-  const payments = existing.payments.map(p => ({ ...p }));
+  const payments = joined.payments;
 
   const summary: SetmoreImportSummary = {
     customersAdded: 0,
@@ -1301,6 +1278,9 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     payments: reconciled.payments,
     summary,
     removedAppointments: reconciled.removed,
+    removedCustomerIds: joined.removedCustomerIds,
+    duplicateAppointmentsRemoved: joined.removedAppointmentIds,
+    appointmentRedirect: joined.appointmentRedirect,
   };
 }
 

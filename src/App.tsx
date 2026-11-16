@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, LockKeyhole, Mail, Sparkles } from 'lucide-react';
+import { ArrowRight, CheckCircle2, LockKeyhole, Mail } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 import DashboardApp from './DashboardApp';
 import { supabase } from './supabase';
@@ -110,7 +110,7 @@ function AuthPage() {
   }
 
   return <div className="auth-shell"><div className="auth-card">
-    <div className="auth-logo"><div className="brand-mark auth-brand-mark"><Sparkles size={21} /></div><div><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
+    <div className="auth-logo"><img className="brand-mark auth-brand-mark" src="/logo.png" alt="" /><div><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
     <div className="auth-heading"><div className="auth-eyebrow">YOUR BUSINESS, ORGANISED</div><h1>{mode === 'signin' ? 'Welcome back' : 'Create your account'}</h1><p>{mode === 'signin' ? 'Sign in to manage your customers and cleaning schedule.' : 'Set up a secure account for your window cleaning business.'}</p></div>
     <form className="auth-form" onSubmit={submit}>
       <label>Email address<div className="auth-input-wrap"><Mail size={17}/><input type="email" autoComplete="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@yourbusiness.co.uk" required /></div></label>
@@ -139,7 +139,7 @@ function CreateWorkspace({ onCreated, onSignOut }: { onCreated: (workspace: Work
     onCreated({ id: data, name: name.trim() });
   }
   return <div className="auth-shell"><div className="auth-card">
-    <div className="auth-logo"><div className="brand-mark auth-brand-mark"><Sparkles size={21}/></div><div><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
+    <div className="auth-logo"><img className="brand-mark auth-brand-mark" src="/logo.png" alt="" /><div><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
     <div className="auth-heading"><div className="auth-eyebrow">ONE LAST STEP</div><h1>Set up your workspace</h1><p>Enter your business name. Your first workspace and default services will be created in Supabase.</p></div>
     <form className="auth-form" onSubmit={submit}><label>Business name<input className="auth-plain-input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. ClearView Window Cleaning" minLength={2} maxLength={100} required /></label>
       {error && <div className="auth-alert auth-alert-error">{error}<p className="auth-help">If this mentions a missing function, run the SQL setup script in Supabase first.</p></div>}
@@ -150,5 +150,5 @@ function CreateWorkspace({ onCreated, onSignOut }: { onCreated: (workspace: Work
 }
 
 function FullPage({ title, text, actionLabel, onAction, onSignOut }: { title: string; text: string; actionLabel?: string; onAction?: () => void; onSignOut?: () => void }) {
-  return <div className="auth-shell"><div className="auth-card auth-message-card"><div className="brand-mark auth-brand-mark"><Sparkles size={21}/></div><h1>{title}</h1><p>{text}</p>{actionLabel && <button className="button primary auth-submit" onClick={onAction}>{actionLabel}</button>}{onSignOut && <button className="auth-text-button" onClick={onSignOut}>Sign out</button>}</div></div>;
+  return <div className="auth-shell"><div className="auth-card auth-message-card"><img className="brand-mark auth-brand-mark" src="/logo.png" alt="" /><h1>{title}</h1><p>{text}</p>{actionLabel && <button className="button primary auth-submit" onClick={onAction}>{actionLabel}</button>}{onSignOut && <button className="auth-text-button" onClick={onSignOut}>Sign out</button>}</div></div>;
 }

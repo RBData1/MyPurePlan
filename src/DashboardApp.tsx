@@ -3,6 +3,7 @@ import { supabase } from './supabase';
 import CustomerServiceEditor, { normalizeServiceLine, serviceCycleLabel, type CustomerServiceLine } from './CustomerServiceEditor';
 import { SERVICE_COLOR_PALETTE, nextServiceColor, resolveServiceColor, withServiceColors } from './serviceColors';
 import UkDateInput from './UkDateInput';
+import { mergeDuplicateCustomers } from './customerMerge';
 import { applySetmoreFileImport, buildSetmoreLastImport, formatSetmoreImportSummary, type SetmoreLastImport } from './setmoreImport';
 import FinanceCharts, { FinanceTax } from './FinanceCharts';
 import InvoiceLedger, { Fold } from './InvoiceLedger';
@@ -33,9 +34,12 @@ import {
   type SquareLocation,
 } from './square';
 import { applySquareBookings, changedSquareVisits, isSquareAppointment, squareVisitKey } from './squareSync';
-import { Archive, ArchiveRestore, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Download, FileText, Filter, ListChecks, MapPin, Menu, MoreHorizontal, Pencil, Pin, Plus, Search, Settings, Sparkles, Upload, Users, Wallet, Wrench, X, ArrowUpRight, CheckCircle2, AlertCircle, CalendarCheck, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, Calculator, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Download, FileText, Filter, ListChecks, MapPin, Menu, MoreHorizontal, Pencil, Pin, Plus, Search, Settings, Sparkles, Upload, Users, Wallet, Wrench, X, ArrowUpRight, CheckCircle2, AlertCircle, CalendarCheck, Trash2 } from 'lucide-react';
 import ScheduleBoard from './ScheduleBoard';
 import SetmorePlan, { type PlanCycle, type SetmorePlanCustomer } from './SetmorePlan';
+import WindowQuoteEstimator from './WindowQuoteEstimator';
+import { extractUkPostcode, type PriceRevision, type QuoteSave, type StoredQuote } from './windowQuote';
+import { deleteWindowQuote as deleteStoredQuote, loadPriceRevisions, loadWindowQuotes, readQuoteCache, readRevisionCache, savePriceRevision, saveWindowQuote as persistWindowQuote } from './quoteStore';
 
 type Customer = { id: string; name: string; email: string; phone: string; phone2: string; address: string; town: string; postcode: string; price: number; duration: number; frequency: number; notes: string; service: string; serviceLines: CustomerServiceLine[]; archived: boolean; quickfileClientId?: number | null };
 type CalendarSource = 'setmore' | 'square';
@@ -745,6 +749,15 @@ function readPlannedSetmore(businessId:string|null):string[]{
   }catch{return [];}
 }
 function writePlannedSetmore(businessId:string|null, ids:string[]){localStorage.setItem(plannedSetmoreKey(businessId), JSON.stringify(ids));}
+function heldSetmoreKey(businessId:string|null){return businessId?`cs_setmore_hold_${businessId}`:'cs_setmore_hold';}
+function readHeldSetmore(businessId:string|null):string[]{
+  try{
+    const raw=localStorage.getItem(heldSetmoreKey(businessId));
+    const parsed=raw?JSON.parse(raw):[];
+    return Array.isArray(parsed)?parsed.filter((id):id is string=>typeof id==='string'):[];
+  }catch{return [];}
+}
+function writeHeldSetmore(businessId:string|null, ids:string[]){localStorage.setItem(heldSetmoreKey(businessId), JSON.stringify(ids));}
 function customerPlanCycles(customer:Pick<Customer,'frequency'|'serviceLines'>):number[]{
   const lines=(customer.serviceLines||[]).filter(line=>line.service&&!line.oneOff);
   const weeks=(lines.length?lines:[{frequency:customer.frequency||6}]).map(line=>Number(line.frequency)||customer.frequency||6);
@@ -761,7 +774,7 @@ function prependSetmoreImportHistory(businessId:string|null, entry:SetmoreLastIm
   return next;
 }
 function initials(name:string){return name.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase()}
-const nav = [{id:'Schedule',icon:CalendarDays},{id:'Setmore',icon:ListChecks},{id:'Customers',icon:Users},{id:'Services & pricing',icon:Wrench}];
+const nav = [{id:'Schedule',icon:CalendarDays},{id:'Setmore',label:'To Plan',icon:ListChecks},{id:'Quote',icon:Calculator},{id:'Customers',icon:Users},{id:'Services & pricing',icon:Wrench}];
 type DashboardProps = { businessId: string | null; businessName?: string; userEmail?: string; onSignOut?: () => void };
 
 export default function DashboardApp({ businessId, businessName, userEmail, onSignOut }: DashboardProps){
@@ -795,12 +808,30 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const [existingInvoiceNumber,setExistingInvoiceNumber]=useState('');
  const [showExistingInvoice,setShowExistingInvoice]=useState(false);
  const [plannedSetmoreIds,setPlannedSetmoreIds]=useState<string[]>(()=>readPlannedSetmore(businessId));
+ const [heldSetmoreIds,setHeldSetmoreIds]=useState<string[]>(()=>readHeldSetmore(businessId));
+ const heldSetmoreIdsRef=useRef(heldSetmoreIds); heldSetmoreIdsRef.current=heldSetmoreIds;
+ const heldWatchReady=useRef(false);
  const [planCycle,setPlanCycle]=useState<PlanCycle>('all');
  const [planSearch,setPlanSearch]=useState('');
  const [showPlannedSetmore,setShowPlannedSetmore]=useState(false);
  const [invoices,setInvoices]=useState<InvoiceRecord[]>(()=>readInvoiceCache(businessId));
  const [invoiceNotice,setInvoiceNotice]=useState('');
+ const [windowQuotes,setWindowQuotes]=useState<StoredQuote[]>(()=>readQuoteCache(businessId));
+ const [priceRevisions,setPriceRevisions]=useState<PriceRevision[]>(()=>readRevisionCache(businessId));
+ useEffect(()=>{
+  if(!businessId) return;
+  let cancelled=false;
+  void (async()=>{
+    const [loadedQuotes, loadedRevisions]=await Promise.all([loadWindowQuotes(businessId), loadPriceRevisions(businessId)]);
+    if(cancelled) return;
+    setWindowQuotes(loadedQuotes.quotes);
+    setPriceRevisions(loadedRevisions.revisions);
+    if(loadedQuotes.unavailable||loadedRevisions.unavailable) setNotice('Run supabase/migrations/012_window_quotes.sql in the Supabase SQL editor so window quotes and price dates are kept for every device.');
+  })();
+  return ()=>{cancelled=true;};
+ },[businessId]);
  const pendingCloudDeletes=useRef<string[]>([]);
+ const pendingCustomerDeletes=useRef<string[]>([]);
  const squareRef=useRef(square); squareRef.current=square;
  const showAddRef=useRef(showAdd); showAddRef.current=showAdd;
  const invoicesRef=useRef(invoices); invoicesRef.current=invoices;
@@ -1009,40 +1040,50 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
     const finalServices=loadedServices.length?loadedServices:withServiceColors(cachedServices.length?cachedServices:defaultServices);
     const restoredFromCache=ownedAppointments.some(a=>!cloudAppointmentIds.has(a.id))||finalCustomers.some(c=>!loadedCustomers.some(row=>row.id===c.id));
     const withInferred=finalCustomers.map(c=>{ if(customerServiceNames(c).length) return c; const last=ownedAppointments.filter(a=>a.customerId===c.id&&a.status!=='Cancelled').sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))[0]; return last?withServiceLines(c,[{service:last.service,price:last.price,duration:last.duration,frequency:last.frequency||c.frequency||6,oneOff:last.oneOff}]):c; });
+    const collapsed=mergeDuplicateCustomers(withInferred, ownedAppointments, finalPayments);
+    const readyCustomers=collapsed.customers;
+    const readyAppointments=collapsed.appointments;
+    const readyPayments=collapsed.payments;
+    for(const id of collapsed.removedAppointmentIds){ if(!pendingCloudDeletes.current.includes(id)) pendingCloudDeletes.current.push(id); }
+    for(const id of collapsed.removedCustomerIds){ if(!pendingCustomerDeletes.current.includes(id)) pendingCustomerDeletes.current.push(id); }
     const cloudAppointmentSig=new Map(loadedAppointments.map(a=>[a.id, appointmentSig(a)]));
-    for(const customer of withInferred){ if(loadedCustomers.some(row=>row.id===customer.id)) syncedCustomerIds.current.add(customer.id); }
-    for(const appointment of ownedAppointments){
+    for(const customer of readyCustomers){ if(loadedCustomers.some(row=>row.id===customer.id)) syncedCustomerIds.current.add(customer.id); }
+    for(const appointment of readyAppointments){
       const original=cloudAppointmentSig.get(appointment.id);
       if(original&&original===appointmentSig(appointment)) syncedAppointmentSig.current.set(appointment.id, original);
     }
     const cloudPaymentIds=new Set(loadedPayments.map(p=>p.id));
-    for(const payment of finalPayments){ if(cloudPaymentIds.has(payment.id)) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
+    for(const payment of readyPayments){ if(cloudPaymentIds.has(payment.id)) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
     const unchanged=background
-      && sameById(appointmentsRef.current, ownedAppointments, appointmentSig)
-      && sameById(paymentsRef.current, finalPayments, paymentSig)
-      && sameById(customersRef.current, withInferred, customerSyncSig)
+      && sameById(appointmentsRef.current, readyAppointments, appointmentSig)
+      && sameById(paymentsRef.current, readyPayments, paymentSig)
+      && sameById(customersRef.current, readyCustomers, customerSyncSig)
       && sameById(servicesRef.current.map(service=>({...service,id:service.name})), finalServices.map(service=>({...service,id:service.name})), serviceSyncSig);
-    if(unchanged&&pendingCloudDeletes.current.length===0){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
-    setCustomers(withInferred); setAppointments(ownedAppointments); setPayments(finalPayments); setServices(finalServices); persistCustomerServices(withInferred,businessId);
-    writeWorkspaceStore('cs_customers',businessId,withInferred);
-    writeWorkspaceStore('cs_appointments',businessId,ownedAppointments);
-    writeWorkspaceStore('cs_payments',businessId,finalPayments);
+    if(unchanged&&pendingCloudDeletes.current.length===0&&pendingCustomerDeletes.current.length===0){ setLoadProgress(''); setCloudStatus('Connected to Supabase'); return; }
+    setCustomers(readyCustomers); setAppointments(readyAppointments); setPayments(readyPayments); setServices(finalServices); persistCustomerServices(readyCustomers,businessId);
+    writeWorkspaceStore('cs_customers',businessId,readyCustomers);
+    writeWorkspaceStore('cs_appointments',businessId,readyAppointments);
+    writeWorkspaceStore('cs_payments',businessId,readyPayments);
     writeWorkspaceStore('cs_services',businessId,finalServices);
-    const derivedInvoices=invoicesFromAppointments(ownedAppointments, withInferred, finalPayments);
+    if(collapsed.removedCustomers) flash(`Joined ${collapsed.removedCustomers} duplicate customer${collapsed.removedCustomers===1?'':'s'} back onto the original card, with their older visits.`, 8000);
+    const derivedInvoices=invoicesFromAppointments(readyAppointments, readyCustomers, readyPayments);
+    const retargetInvoices=(rows:InvoiceRecord[])=>collapsed.appointmentRedirect.size?rows.map(row=>{const next=row.appointmentId?collapsed.appointmentRedirect.get(row.appointmentId):undefined;return next?{...row,appointmentId:next}:row;}):rows;
     const invoiceLoad=await loadInvoices(client, businessId);
     if(invoiceLoad.error){
-      const localInvoices=combineInvoiceSources([], readInvoiceCache(businessId), derivedInvoices);
+      const localInvoices=retargetInvoices(combineInvoiceSources([], readInvoiceCache(businessId), derivedInvoices));
       setInvoices(localInvoices);
       writeInvoiceCache(businessId, localInvoices);
       if(/invoices|schema cache|relation/i.test(invoiceLoad.error)) setInvoiceNotice('Invoices already created are listed here. Run supabase/migrations/010_invoices_and_webhook.sql in the Supabase SQL editor so other devices and QuickFile payment updates can use the same register.');
     }else{
-      const combined=combineInvoiceSources(invoiceLoad.rows, readInvoiceCache(businessId), derivedInvoices);
+      const combined=retargetInvoices(combineInvoiceSources(invoiceLoad.rows, readInvoiceCache(businessId), derivedInvoices));
       setInvoices(combined);
       writeInvoiceCache(businessId, combined);
       setInvoiceNotice('');
       const known=new Set(invoiceLoad.rows.map(row=>row.quickfileInvoiceId));
       const missing=combined.filter(row=>!known.has(row.quickfileInvoiceId));
-      if(missing.length) void saveInvoices(client, businessId, missing);
+      const moved=combined.filter(row=>invoiceLoad.rows.some(previous=>previous.quickfileInvoiceId===row.quickfileInvoiceId&&previous.appointmentId!==row.appointmentId));
+      const toSave=[...new Map([...missing,...moved].map(row=>[row.quickfileInvoiceId,row])).values()];
+      if(toSave.length) void saveInvoices(client, businessId, toSave);
     }
     setLoadProgress('');
     setCloudStatus(restoredFromCache&&!background?'Restored local schedule · syncing to Supabase…':'Connected to Supabase');
@@ -1126,6 +1167,19 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
       }
       pendingCloudDeletes.current=pendingCloudDeletes.current.filter(id=>!deleted.has(id));
     }
+    const customerDeleteIds=[...pendingCustomerDeletes.current];
+    if(!appointmentErr && customerDeleteIds.length){
+      const deletedCustomers=new Set<string>();
+      for(let i=0;i<customerDeleteIds.length;i+=40){
+        const chunk=customerDeleteIds.slice(i,i+40);
+        await client.from('customer_addresses').delete().eq('business_id',businessId).in('customer_id',chunk);
+        await client.from('recurrence_rules').delete().eq('business_id',businessId).in('customer_id',chunk);
+        const {error:customerDeleteErr}=await client.from('customers').delete().eq('business_id',businessId).in('id',chunk);
+        if(customerDeleteErr) errors.push('duplicate customer: '+customerDeleteErr.message);
+        else chunk.forEach(id=>{ deletedCustomers.add(id); syncedCustomerIds.current.delete(id); });
+      }
+      pendingCustomerDeletes.current=pendingCustomerDeletes.current.filter(id=>!deletedCustomers.has(id));
+    }
     const paymentErr=await upsertInChunks(client,'payments',paymentRows,'id');
     if(paymentErr) errors.push('payments: '+paymentErr);
     else { for(const payment of dirtyPayments) syncedPaymentSig.current.set(payment.id, paymentSig(payment)); }
@@ -1155,6 +1209,7 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  const todaysTotal=todayAppointments.reduce((s,a)=>s+a.price,0);
  const activeCustomers=customers.filter(c=>!c.archived);
  const plannedSetmoreSet=useMemo(()=>new Set(plannedSetmoreIds),[plannedSetmoreIds]);
+ const heldSetmoreSet=useMemo(()=>new Set(heldSetmoreIds),[heldSetmoreIds]);
  const sourceAppointments=useMemo(()=>appointments.filter(a=>isSquareAppointment(a)===(settings.calendarSource==='square')),[appointments,settings.calendarSource]);
  const setmoreAppointments=useMemo(()=>appointments.filter(a=>!isSquareAppointment(a)),[appointments]);
  const financeAppointments=useMemo(()=>appointments.filter(a=>isSquareAppointment(a)===(financeSource==='square')),[appointments,financeSource]);
@@ -1179,11 +1234,12 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
  };
  const unplannedCustomers=useMemo(()=>waitingFrom(setmoreAppointments),[customers,setmoreAppointments]);
  const scheduleWaiting=useMemo(()=>waitingFrom(sourceAppointments),[customers,sourceAppointments]);
- const overdue=scheduleWaiting.customers.filter(c=>!plannedSetmoreSet.has(c.id));
+ const overdue=scheduleWaiting.customers.filter(c=>!plannedSetmoreSet.has(c.id)&&!heldSetmoreSet.has(c.id));
  const setmorePlanRows=useMemo<SetmorePlanCustomer[]>(()=>unplannedCustomers.customers.map(customer=>{
   const cycles=customerPlanCycles(customer);
-  return {id:customer.id,name:customer.name,place:[customer.town,customer.postcode].filter(Boolean).join(' · '),cycles,cycleLabel:planCycleLabel(cycles),lastVisit:unplannedCustomers.lastVisit.get(customer.id)||null,planned:plannedSetmoreSet.has(customer.id)};
- }).sort((a,b)=>a.name.localeCompare(b.name,'en')),[unplannedCustomers,plannedSetmoreSet]);
+  const held=heldSetmoreSet.has(customer.id);
+  return {id:customer.id,name:customer.name,place:[customer.town,customer.postcode].filter(Boolean).join(' · '),cycles,cycleLabel:planCycleLabel(cycles),lastVisit:unplannedCustomers.lastVisit.get(customer.id)||null,planned:!held&&plannedSetmoreSet.has(customer.id),held};
+ }),[unplannedCustomers,plannedSetmoreSet,heldSetmoreSet]);
  const overdueFiltered=useMemo(()=>{
   const q=scheduleSearch.trim().toLowerCase();
   if(!q) return overdue;
@@ -2117,6 +2173,57 @@ function openEditAppointment(appointment:Appointment){
   flash(created.calendarSource==='square'?'Appointment added and sent to Square.':'Appointment added successfully.');
  }
  function openCustomerForm(customer?:Customer|null){const original=customer?customers.find(c=>c.id===customer.id)??customer:null;setEditingCustomer(original);setCustomerHistoryPeriod('year');setShowCustomer(true);}
+ function rememberWindowQuote(quote:StoredQuote){
+  setWindowQuotes(prev=>[quote, ...prev.filter(item=>item.id!==quote.id)].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));
+  void persistWindowQuote(businessId, quote).then(error=>{
+    if(error==='missing-table') setNotice('Run supabase/migrations/012_window_quotes.sql in the Supabase SQL editor so window quotes are kept for every device.');
+    else if(error) setNotice(error);
+  });
+ }
+ function forgetWindowQuote(id:string){
+  setWindowQuotes(prev=>prev.filter(item=>item.id!==id));
+  void deleteStoredQuote(businessId, id);
+ }
+ function confirmWindowPrices(revision:PriceRevision){
+  setPriceRevisions(prev=>[revision, ...prev.filter(item=>item.id!==revision.id)]);
+  void savePriceRevision(businessId, revision).then(error=>{
+    if(error==='missing-table') setNotice('Run supabase/migrations/012_window_quotes.sql in the Supabase SQL editor so confirmed prices are dated for every device.');
+    else if(error) setNotice(error);
+  });
+ }
+ async function saveWindowQuote(quote:QuoteSave){
+  const service=services.find(item=>/window/i.test(item.name))?.name||settings.mainService||services[0]?.name||'Window cleaning';
+  const catalog=services.find(item=>item.name===service);
+  const duration=Math.min(180, Math.max(30, quote.duration||catalog?.duration||45));
+  const postcode=extractUkPostcode(quote.address);
+  const oneOff=quote.plan==='oneoff';
+  const frequency=quote.plan==='8weeks'?8:4;
+  const notes=[
+    `Quote · ${quote.method==='wfp'?'WFP':'Traditional'} · ${quote.windowCount} window units`,
+    quote.propertyType,
+    quote.addons.length?`Add-ons: ${quote.addons.join(', ')}`:'',
+    quote.comment,
+  ].filter(Boolean).join('\n');
+  const nameKey=quote.clientName.trim().toLowerCase();
+  const postcodeKey=postcode.replace(/\s/g,'').toLowerCase();
+  const existing=nameKey?customers.find(customer=>customer.name.trim().toLowerCase()===nameKey && (!postcodeKey || customer.postcode.replace(/\s/g,'').toLowerCase()===postcodeKey)):undefined;
+  const customer=existing??normalizeCustomer({
+    id:crypto.randomUUID(),
+    name:quote.clientName.trim()||quote.address.trim()||'Window quote',
+    email:'',phone:'',phone2:'',
+    address:quote.address.trim(),town:'',postcode,notes:'',service,
+    price:0,duration,frequency,archived:false,
+    serviceLines:[normalizeServiceLine({service,price:0,duration,frequency,oneOff:false})],
+  }, services);
+  if(!existing) setCustomers(prev=>[customer,...prev]);
+  const date=addDays(0);
+  const time=nextAvailableTime(appointmentsRef.current.filter(item=>!isSquareAppointment(item)), date);
+  const created:Appointment={id:crypto.randomUUID(),customerId:customer.id,date,time,duration,service,price:quote.price,status:'Confirmed',address:customerProperty(customer)||quote.address.trim()||'Address not provided',notes,oneOff,frequency};
+  const result=await commitAppointments(list=>resolveOverlappingAppointments(cascadeFollowingAppointments([...list, created], created)));
+  rememberWindowQuote({...quote.record, customerId:customer.id, outcome:'customer', clientName:customer.name, postcode:customer.postcode||postcode});
+  openCustomerForm(customer);
+  flash(result.failed?'Quote saved on the customer card. The visit could not be added.':'Quote saved on the customer card. Their regular price was left as you set it, and a visit was added for today.');
+ }
  function openAppointmentCustomer(){
   const selected=(document.querySelector('select[name=customerId]') as HTMLSelectElement|null)?.value||'';
   const id=selected||editingAppointment?.customerId||scheduleCustomerId||'';
@@ -2189,6 +2296,44 @@ function openEditAppointment(appointment:Appointment){
  }
  async function saveSettings(form:HTMLFormElement){const fd=new FormData(form);const next:BusinessSettings={...settings,name:String(fd.get('name')).trim()||settings.name,email:String(fd.get('email')).trim(),phone:String(fd.get('phone')).trim(),postcode:String(fd.get('postcode')).trim().toUpperCase(),workingDays:String(fd.get('workingDays')),timezone:String(fd.get('timezone')),calendarSource:settings.calendarSource};setSettings(next);if(businessId&&supabase){const {error}=await supabase.from('businesses').update({name:next.name,email:next.email||null,phone:next.phone||null}).eq('id',businessId);if(error){flash('Could not save settings to Supabase: '+error.message);return;}}flash('Settings saved.');}
  function openSetmoreImport(){setmoreFileRef.current?.click();}
+ function holdSetmoreCustomer(id:string){
+  setHeldSetmoreIds(prev=>{
+    const next=prev.includes(id)?prev:[...prev,id];
+    writeHeldSetmore(businessId,next);
+    return next;
+  });
+  setPlannedSetmoreIds(prev=>{
+    if(!prev.includes(id)) return prev;
+    const next=prev.filter(item=>item!==id);
+    writePlannedSetmore(businessId,next);
+    return next;
+  });
+ }
+ function releaseSetmoreCustomer(id:string){
+  setHeldSetmoreIds(prev=>{
+    const next=prev.filter(item=>item!==id);
+    writeHeldSetmore(businessId,next);
+    return next;
+  });
+ }
+ useEffect(()=>{
+  if(!customers.length) return;
+  const today=addDays(0);
+  const booked=new Set(setmoreAppointments.filter(a=>a.status!=='Cancelled'&&a.date>=today).map(a=>a.customerId));
+  const alive=new Set(customers.filter(c=>!c.archived).map(c=>c.id));
+  const prev=heldSetmoreIdsRef.current;
+  const next=prev.filter(id=>alive.has(id)&&!booked.has(id));
+  const watching=heldWatchReady.current;
+  heldWatchReady.current=true;
+  if(next.length===prev.length&&next.every((id,index)=>id===prev[index])) return;
+  writeHeldSetmore(businessId,next);
+  setHeldSetmoreIds(next);
+  if(!watching) return;
+  const released=prev.filter(id=>alive.has(id)&&booked.has(id));
+  if(!released.length) return;
+  const label=released.length===1?(customers.find(c=>c.id===released[0])?.name||'A customer'):`${released.length} customers`;
+  flash(released.length===1?`${label} left On hold — the visit is booked, so they are back on the schedule.`:`${label} left On hold — their visits are booked, so they are back on the schedule.`);
+ },[customers,setmoreAppointments,businessId]);
  function togglePlannedSetmore(id:string){
   setPlannedSetmoreIds(prev=>{
     const next=prev.includes(id)?prev.filter(item=>item!==id):[...prev,id];
@@ -2201,9 +2346,12 @@ function openEditAppointment(appointment:Appointment){
   setImportingSetmore(true);
   try{
    const result=await applySetmoreFileImport(file,{customers,appointments,services,payments});
+   for(const id of result.duplicateAppointmentsRemoved){ if(!pendingCloudDeletes.current.includes(id)) pendingCloudDeletes.current.push(id); }
+   for(const id of result.removedCustomerIds){ if(!pendingCustomerDeletes.current.includes(id)) pendingCustomerDeletes.current.push(id); }
+   const invoiceBase=result.appointmentRedirect.size?invoices.map(row=>{const next=row.appointmentId?result.appointmentRedirect.get(row.appointmentId):undefined;return next?{...row,appointmentId:next}:row;}):invoices;
    const importedServices=withServiceColors(result.services);
    const nextCustomers=result.customers.map(c=>normalizeCustomer(c,importedServices));
-   const settled=settleInvoicedVisits(resolveOverlappingAppointments(result.appointments as Appointment[]), invoices, id=>nextCustomers.find(customer=>customer.id===id)?.name||'');
+   const settled=settleInvoicedVisits(resolveOverlappingAppointments(result.appointments as Appointment[]), invoiceBase, id=>nextCustomers.find(customer=>customer.id===id)?.name||'');
    const nextAppointments=settled.appointments;
    if(settled.removedIds.length) pendingCloudDeletes.current.push(...settled.removedIds);
    if(settled.invoices!==invoices){
@@ -2247,11 +2395,22 @@ function openEditAppointment(appointment:Appointment){
    setPlannedSetmoreIds([]);
    writePlannedSetmore(businessId,[]);
    setShowPlannedSetmore(false);
+   const bookedNow=new Set(nextAppointments.filter(a=>!isSquareAppointment(a)&&a.status!=='Cancelled'&&a.date>=addDays(0)).map(a=>a.customerId));
+   const releasedHold=heldSetmoreIds.filter(id=>bookedNow.has(id));
+   if(releasedHold.length){
+    const kept=heldSetmoreIds.filter(id=>!bookedNow.has(id));
+    writeHeldSetmore(businessId, kept);
+    setHeldSetmoreIds(kept);
+   }
    // Stay on the current calendar day — jumping to the file's date range made the schedule look empty.
+   const holdNote=releasedHold.length===1
+    ? `${nextCustomers.find(c=>c.id===releasedHold[0])?.name||'1 customer'} left On hold and is back on the schedule.`
+    : releasedHold.length>1?`${releasedHold.length} customers left On hold and are back on the schedule.`:'';
    const toast=[
     formatSetmoreImportSummary(result.summary),
     result.summary.fileKind?`file=${result.summary.fileKind}`:'',
     result.summary.detectedHeaders?.length?`columns=${result.summary.detectedHeaders.slice(0,8).join('/')}`:'',
+    holdNote,
    ].filter(Boolean).join(' · ');
    flash(toast);
   }catch(error){
@@ -2476,18 +2635,18 @@ function openEditAppointment(appointment:Appointment){
   const timer=window.setInterval(run, 60000);
   return ()=>{ stopped=true; window.clearTimeout(start); window.clearInterval(timer); };
  },[remoteReady, settings.calendarSource, square.accessToken, square.connectedAt, square.locationId, square.environment]);
- if(businessId&&!remoteReady){return <div className="auth-shell"><div className="auth-card"><div className="brand-mark auth-brand-mark"><Sparkles size={21}/></div><h1>{remoteError?'Could not load your workspace':'Connecting MyPurePlan'}</h1><p>{remoteError?'MyPurePlan could not read the database. Check that the SQL migration was run and the connection settings are correct.':(loadProgress||'Loading your customers, services and appointments from Supabase…')}</p>{remoteError&&<><pre className="auth-error-detail">{remoteError}</pre><button className="button primary auth-submit" onClick={()=>window.location.reload()}>Try again</button></>}<button className="auth-text-button" onClick={()=>onSignOut?.()}>Sign out</button></div></div>}
+ if(businessId&&!remoteReady){return <div className="auth-shell"><div className="auth-card"><img className="brand-mark auth-brand-mark" src="/logo.png" alt="" /><h1>{remoteError?'Could not load your workspace':'Connecting MyPurePlan'}</h1><p>{remoteError?'MyPurePlan could not read the database. Check that the SQL migration was run and the connection settings are correct.':(loadProgress||'Loading your customers, services and appointments from Supabase…')}</p>{remoteError&&<><pre className="auth-error-detail">{remoteError}</pre><button className="button primary auth-submit" onClick={()=>window.location.reload()}>Try again</button></>}<button className="auth-text-button" onClick={()=>onSignOut?.()}>Sign out</button></div></div>}
  return <div className={`app-shell ${navExpanded?'nav-expanded':'nav-collapsed'}`}>
   {menuOpen&&<button type="button" className="sidebar-scrim" aria-label="Close menu" onClick={()=>setMenuOpen(false)}/>}
   <aside className={`sidebar ${navExpanded?'':'sidebar-collapsed'} ${menuOpen?'sidebar-open':''}`}>
    <div className="sidebar-tools"><button type="button" className="icon-button nav-toggle" aria-label={navExpanded?'Collapse navigation':'Expand navigation'} title={navExpanded?'Collapse menu':'Expand menu'} onClick={()=>{if(typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches){setMenuOpen(false);return;}setNavExpanded(v=>!v);}}><Menu size={20}/></button><button type="button" className="icon-button mobile-close" aria-label="Close menu" onClick={()=>setMenuOpen(false)}><X size={18}/></button></div>
-   <div className="brand"><div className="brand-mark" title="MyPurePlan"><Sparkles size={20}/></div><div className="brand-copy"><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
+   <div className="brand"><img className="brand-mark" src="/logo.png" alt="" title="MyPurePlan" /><div className="brand-copy"><strong>MyPurePlan</strong><span>WINDOW CARE PRO</span></div></div>
    <div className="workspace" title={settings.name||businessName||'Business'}><div className="workspace-avatar">{initials(settings.name||businessName||'Business')}</div><div className="workspace-copy"><strong>{settings.name||businessName||'Business workspace'}</strong><span>Business workspace</span></div><ChevronDown size={15}/></div>
-   <div className="nav-label">WORKSPACE</div><nav>{nav.map(item=><button key={item.id} title={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>{if(item.id==='Customers')openCustomersPage();else{setPage(item.id);setMenuOpen(false);}}}><item.icon size={18}/><span>{item.id}</span></button>)}</nav>
+   <div className="nav-label">WORKSPACE</div><nav>{nav.map(item=><button key={item.id} title={item.label||item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>{if(item.id==='Customers')openCustomersPage();else{setPage(item.id);setMenuOpen(false);}}}><item.icon size={18}/><span>{item.label||item.id}</span></button>)}</nav>
    <div className="nav-label tools-label">MANAGE</div><button title="Finance" className={`nav-item ${page==='Finance'?'active':''}`} onClick={()=>setPage('Finance')}><Wallet size={18}/><span>Finance</span></button><button title="Settings" className={`nav-item ${page==='Settings'?'active':''}`} onClick={()=>setPage('Settings')}><Settings size={18}/><span>Settings</span></button>
    <div className="sidebar-bottom"><div className="upgrade-card"><div className="upgrade-icon"><Sparkles size={17}/></div><strong>Make every day count</strong><p>Keep your rounds organised and your customers happy.</p><button onClick={()=>setPage('Finance')}>View finance <ArrowUpRight size={14}/></button></div><div className="profile-row" title="Business owner"><div className="profile-avatar">RB</div><div className="profile-copy"><strong>Business owner</strong><span>Free workspace</span></div><MoreHorizontal size={18}/></div></div>
   </aside>
-  <main className="main-area"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-button nav-toggle mobile-menu" aria-label="Open navigation" title="Open menu" onClick={()=>setMenuOpen(true)}><Menu size={20}/></button><div className="breadcrumb">Workspace <ChevronRight size={14}/> <strong>{page}</strong></div></div><div className="topbar-actions"><button className="avatar-small" title="Sign out" onClick={()=>onSignOut?.()}>{(userEmail||'BO').slice(0,1).toUpperCase()}</button></div></header>
+  <main className="main-area"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-button nav-toggle mobile-menu" aria-label="Open navigation" title="Open menu" onClick={()=>setMenuOpen(true)}><Menu size={20}/></button><div className="breadcrumb">Workspace <ChevronRight size={14}/> <strong>{page==='Setmore'?'To Plan':page}</strong></div></div><div className="topbar-actions"><button className="avatar-small" title="Sign out" onClick={()=>onSignOut?.()}>{(userEmail||'BO').slice(0,1).toUpperCase()}</button></div></header>
   <div className="content">
       {(page==='Schedule'||page==='Dashboard'||page==='Calendar')&&<ScheduleBoard
     view={scheduleView}
@@ -2531,7 +2690,8 @@ function openEditAppointment(appointment:Appointment){
     onDropJob={onApptDrop}
     renderTools={job=>{const appointment=appointments.find(a=>a.id===job.id);if(!appointment)return null;return <><JobFlags appointment={appointment}/><JobQuickActions appointment={appointment}/></>;}}
   />}
-{page==='Setmore'&&<SetmorePlan customers={setmorePlanRows} cycle={planCycle} setCycle={setPlanCycle} search={planSearch} setSearch={setPlanSearch} showPlanned={showPlannedSetmore} setShowPlanned={setShowPlannedSetmore} onToggle={togglePlannedSetmore} onOpen={id=>{const customer=customers.find(c=>c.id===id);if(customer)openCustomerForm(customer);}} dateLabel={dateLabel}/>}
+{page==='Setmore'&&<SetmorePlan customers={setmorePlanRows} cycle={planCycle} setCycle={setPlanCycle} search={planSearch} setSearch={setPlanSearch} showPlanned={showPlannedSetmore} setShowPlanned={setShowPlannedSetmore} onToggle={togglePlannedSetmore} onHold={holdSetmoreCustomer} onRelease={releaseSetmoreCustomer} onOpen={id=>{const customer=customers.find(c=>c.id===id);if(customer)openCustomerForm(customer);}} dateLabel={dateLabel}/>}
+{page==='Quote'&&<div className="page-scroll"><WindowQuoteEstimator businessName={settings.name} businessPhone={settings.phone} quotes={windowQuotes} revisions={priceRevisions} onSave={quote=>void saveWindowQuote(quote)} onRemember={rememberWindowQuote} onForget={forgetWindowQuote} onRevise={confirmWindowPrices} /></div>}
 {page==='Customers'&&<div className="list-screen"><div className="page-heading"><div><div className="eyebrow"><Users size={14}/> CUSTOMER RELATIONSHIPS</div><h1>Customers</h1><p>Active customers are scheduled as usual. Move former clients to Past customers — they stay in your database with history.</p></div><div className="heading-actions"><button className="button secondary" onClick={openSetmoreImport} disabled={importingSetmore}><Upload size={16}/> {importingSetmore?'Importing…':'Import Setmore'}</button><button className="button secondary" onClick={()=>exportCSV(customers)}><Download size={16}/> Export CSV</button><button className="button primary" onClick={()=>openCustomerForm()}><Plus size={17}/> Add customer</button></div></div>
     <div className="panel table-panel"><div className="table-controls"><div className="search-field"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search customers, postcodes..."/></div><div className="filter-control"><Wrench size={15}/><select value={serviceFilter} onChange={e=>setServiceFilter(e.target.value)}><option>All services</option>{services.map(s=><option key={s.name} value={s.name}>{s.name}</option>)}<option>Unassigned</option></select></div><div className="filter-control"><Filter size={15}/><select value={customerFilter} onChange={e=>setCustomerFilter(e.target.value)}><option>All customers</option><option>4 weeks</option><option>6 weeks</option><option>8 weeks</option><option>10 weeks</option><option>12 weeks</option></select></div><div className="filter-control customer-list-mode"><select value={customerListMode} onChange={e=>setCustomerListMode(e.target.value==='Past'?'Past':'Active')} aria-label="Customer list"><option value="Active">Active customers</option><option value="Past">Past customers</option></select></div>{selectedListedIds.length>0&&<button type="button" className="button tiny danger" disabled={deletingCustomers} onClick={()=>void removeCustomers(selectedListedIds)}>{deletingCustomers?'Deleting…':`Delete selected · ${selectedListedIds.length}`}</button>}<span className="result-count">{listedCustomers.length} {customerListMode==="Past"?"past":"active"}</span></div>
     {listedCustomers.length===0?<EmptyState title={customerListMode==='Past'?'No past customers':'No customers found'} text={customerListMode==='Past'?'Archived customers appear here. Reactivate them anytime.':'Try a different search or add a customer.'} action={customerListMode==='Past'?'Back to active':'Add customer'} onClick={()=>{if(customerListMode==='Past')setCustomerListMode('Active');else openCustomerForm();}}/>:<div className="table-wrap"><table><thead><tr><th className="select-cell"><input ref={input=>{if(input)input.indeterminate=selectedListedIds.length>0&&selectedListedIds.length<listedCustomers.length;}} type="checkbox" checked={listedCustomers.length>0&&selectedListedIds.length===listedCustomers.length} onChange={toggleListedCustomerSelection} aria-label="Select customers in this list"/></th><th>Customer</th><th>Property</th><th>Services</th><th>Contact</th><th></th></tr></thead><tbody>{listedCustomers.map(c=>{const names=customerServiceNames(c);const primary=names[0]?customerLineFor(c,names[0]):null;const selected=selectedCustomerIds.includes(c.id);return <tr key={c.id} className={`clickable-row${selected?' is-selected':''}`} role="button" tabIndex={0} onClick={()=>openCustomerForm(c)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openCustomerForm(c);}}}><td className="select-cell" onClick={e=>e.stopPropagation()} onKeyDown={e=>e.stopPropagation()}><input type="checkbox" checked={selected} onChange={()=>toggleCustomerSelected(c.id)} aria-label={`Select ${c.name}`}/></td><td><div className="table-customer"><div className="customer-avatar">{initials(c.name)}</div><div><strong>{c.name}</strong><small>{c.email||'No email added'}</small></div></div></td><td><span>{c.address}</span><small className="table-sub">{[c.town,c.postcode].filter(Boolean).join(' · ')}</small></td><td><span className="cycle-pill" style={names[0]?{color:resolveServiceColor(services.find(s=>s.name===names[0])?.color,services.findIndex(s=>s.name===names[0]))}:undefined}>{customerServicesLabel(c)}</span>{primary&&names.length===1?<small className="table-sub">{money(primary.price)} · {primary.duration} min</small>:names.length>1?<small className="table-sub">{names.join(' · ')}</small>:null}</td><td><span>{c.phone||'—'}</span>{c.phone2?<small className="table-sub">{c.phone2}</small>:null}{c.notes?<small className="table-sub notes-preview">{c.notes.length>48?c.notes.slice(0,48)+'…':c.notes}</small>:null}</td><td><div className="row-actions" onClick={e=>e.stopPropagation()}><button className="icon-button" title="Schedule appointment" onClick={()=>openSchedule(c.id)}><Plus size={16}/></button><button className="icon-button" title="Edit customer" onClick={()=>openCustomerForm(c)}><Pencil size={15}/></button><button className="icon-button" title={c.archived?'Reactivate customer':'Move to past customers'} onClick={()=>c.archived?reactivateCustomer(c.id):archiveCustomer(c.id)}>{c.archived?<ArchiveRestore size={15}/>:<Archive size={15}/>}</button><button className="icon-button" title="Delete customer permanently" onClick={()=>void removeCustomer(c.id)}><Trash2 size={15}/></button></div></td></tr>;})}</tbody></table></div>}
@@ -2579,6 +2739,15 @@ function openEditAppointment(appointment:Appointment){
     {!editingAppointment&&scheduleCustomer&&!lastVisit&&<div className="last-visit-card"><div className="last-visit-label">Last visit</div><p className="last-visit-note muted-note">No previous appointment found for this customer.</p>{scheduleCustomer.notes?<p className="last-visit-note customer-note-hint"><AlertCircle size={14}/><span><strong>Customer notes:</strong> {scheduleCustomer.notes}</span></p>:null}</div>}
     <label>Customer<select name="customerId" required defaultValue={editingAppointment?.customerId||scheduleCustomer?.id||''} onChange={e=>applyAppointmentCustomerDefaults(e.target.value)}><option value="" disabled>Select a customer</option>{(editingAppointment?customers.filter(c=>!c.archived||c.id===editingAppointment.customerId):activeCustomers).map(c=><option value={c.id} key={c.id}>{c.name} — {c.postcode}{c.archived?' (past)':''}</option>)}</select></label><div className="form-row"><label>Date<UkDateInput name="date" defaultValue={editingAppointment?.date||scheduleDate} onIsoChange={isoDate=>{setScheduleDate(isoDate);if(!editingAppointment)return;const updated={...editingAppointment,date:isoDate};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}} required/></label><label>Start time<input name="time" type="time" key={`time-${editingAppointment?.id||'new'}-${scheduleDate}-${suggestedStartTime}`} defaultValue={suggestedStartTime} required onChange={e=>{if(!editingAppointment)return;const nextTime=e.target.value.slice(0,5);if(!/^\d{2}:\d{2}$/.test(nextTime))return;const updated={...editingAppointment,time:nextTime,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label></div><div className="form-row"><label>Service<select name="service" defaultValue={editingAppointment?.service||scheduleCustomer?.service||defaultServiceName} onChange={e=>{const selectedName=e.target.value;const customerId=(document.querySelector('select[name=customerId]') as HTMLSelectElement|null)?.value;if(customerId){applyAppointmentCustomerDefaults(customerId,{serviceName:selectedName,syncServiceSelect:false});return;}const catalogItem=services.find(x=>x.name===selectedName);const priceInput=document.getElementById('appointment-price') as HTMLInputElement|null;const durationInput=document.getElementById('appointment-duration') as HTMLInputElement|null;const cycleInput=document.getElementById('appointment-cycle') as HTMLSelectElement|null;if(durationInput)durationInput.value=String(catalogItem?.duration??30);if(priceInput)priceInput.value=catalogItem&&catalogItem.price>0?String(catalogItem.price):'';if(cycleInput)cycleInput.value='oneoff';}}>{services.map(s=><option key={s.name} value={s.name}>{s.name}{s.name===mainServiceName?' (main)':''}</option>)}</select></label><label>Cycle<select id="appointment-cycle" name="cycle" defaultValue={editingAppointment?.oneOff?'oneoff':(()=>{const line=scheduleCustomer?customerLineFor(scheduleCustomer,editingAppointment?.service||scheduleCustomer.service||defaultServiceName):null;if(line?.oneOff)return 'oneoff';return String(editingAppointment?.frequency||line?.frequency||scheduleCustomer?.frequency||6);})()}><option value="oneoff">One-off</option>{CYCLE_WEEKS.map(w=><option key={w} value={w}>Every {w} weeks</option>)}</select></label></div><div className="form-row"><label>Duration (minutes)<input id="appointment-duration" name="duration" type="number" min="10" step="5" defaultValue={editingAppointment?.duration??scheduleCustomer?.duration??defaultService?.duration??30} required onChange={e=>{if(!editingAppointment)return;const nextDuration=Math.max(5,Number(e.target.value)||30);const updated={...editingAppointment,duration:nextDuration,date:scheduleDate||editingAppointment.date};setEditingAppointment(updated);setAppointments(p=>resolveOverlappingAppointments(cascadeFollowingAppointments(p, updated)));}}/></label><label className="visit-price">Price for this visit (£)<input id="appointment-price" className="price-input" name="price" type="number" min="0" step="0.01" inputMode="decimal" defaultValue={editingAppointment?.price??(scheduleCustomer&&scheduleCustomer.price>0?scheduleCustomer.price:undefined)} placeholder="0.00" required/><small className="field-hint">This visit only — does not change the customer’s regular rate.</small></label></div><label>Job notes (this visit only)<textarea name="notes" rows={2} defaultValue={editingAppointment?.notes||''} placeholder="Notes for this appointment only — not the customer profile notes..."/></label><div className="modal-actions"><button type="button" className="button secondary" onClick={openAppointmentCustomer}><Users size={16}/> Customer card</button><button type="button" className="button secondary" onClick={closeSchedule}>Cancel</button>{editingAppointment&&<button type="button" className="button secondary" onClick={()=>{const id=editingAppointment.id;closeSchedule();void removeAppointment(id);}}>Delete</button>}<button className="button primary" type="submit">{editingAppointment?(needsInvoiceLink(appointments.find(a=>a.id===editingAppointment.id)||editingAppointment)?<><Check size={16}/> Done</>:<><Check size={16}/> Save</>):<><Plus size={16}/> Create appointment</>}</button></div></form></Modal>}
   {showCustomer&&<Modal wide={Boolean(editingCustomer)} stacked={showAdd} title={editingCustomer?(editingCustomer.archived?'Past customer':'Customer'):'Add customer'} subtitle={editingCustomer?(editingCustomer.archived?'This customer is archived. Reactivate them to schedule again.':'Services, visit history, and contact details in one place.'):'Save a customer, property details, and one or more services.'} onClose={closeCustomerForm}><form className="modal-form" key={editingCustomer?.id||'new-customer'} onSubmit={e=>{e.preventDefault();saveCustomerForm(e.currentTarget)}}><label>Customer name<input name="name" defaultValue={editingCustomer?.name||''} placeholder="e.g. Jamie Smith" required/></label><div className="form-row"><label>Email address<input name="email" type="email" defaultValue={editingCustomer?.email||''} placeholder="jamie@example.com"/></label><label>Phone number<input name="phone" defaultValue={editingCustomer?.phone||''} placeholder="07..."/></label></div><label>Additional phone<input name="phone2" defaultValue={editingCustomer?.phone2||''} placeholder="Second number from Setmore"/></label><label>Property address<input name="address" defaultValue={editingCustomer?.address||''} placeholder="House number and street" required/></label><div className="form-row"><label>Town / locality<input name="town" defaultValue={editingCustomer?.town||''} placeholder="e.g. Sidcup" required/></label><label>Postcode<input name="postcode" defaultValue={editingCustomer?.postcode||''} placeholder="DA15 8AB" required/></label></div><CustomerServiceEditor catalog={services} initialLines={editingCustomer?.serviceLines||[]} defaultServiceName={editingCustomer?.service||selectedService||defaultServiceName} allowEmpty={Boolean(editingCustomer)}/><label>Customer notes<textarea name="notes" rows={3} defaultValue={editingCustomer?.notes||''} placeholder="Setmore customer notes — stay on the customer profile, separate from job notes..."/></label><p className="field-hint">Customer notes come from the Setmore customer profile. Job notes on each appointment are separate.</p>
+    {editingCustomer&&<div className="customer-history">
+      <div className="customer-history-head">
+        <div>
+          <strong>Window quotes</strong>
+          <p>These stay on the customer card and do not change the price you set by hand.</p>
+        </div>
+      </div>
+      {windowQuotes.filter(quote=>quote.customerId===editingCustomer.id).length===0?<div className="customer-history-empty">No window quotes for this customer yet.</div>:<div className="customer-history-list">{windowQuotes.filter(quote=>quote.customerId===editingCustomer.id).map(quote=><div className="customer-history-row" key={quote.id}><div className="customer-history-main"><strong>{new Date(quote.createdAt).toLocaleString('en-GB')}</strong><span>{quote.mode==='manual'?'Manual':'AI'} · {quote.plan==='oneoff'?'First clean':quote.plan==='8weeks'?'Every 8 weeks':'Every 4 weeks'}{quote.notes?` · ${quote.notes}`:''}</span></div><div className="customer-history-meta"><strong>{money(quote.price)}</strong></div></div>)}</div>}
+    </div>}
     {editingCustomer&&<div className="customer-history">
       <div className="customer-history-head">
         <div>
