@@ -1,5 +1,6 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, StickyNote, Upload, Wrench } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, StickyNote, Upload } from 'lucide-react';
+import { ServiceMark } from './serviceIcon';
 import UkDateInput from './UkDateInput';
 import { isSetmoreNoShow } from './setmoreImport';
 
@@ -200,7 +201,7 @@ export default function ScheduleBoard(props: Props) {
         <div className="schedule-title-row"><strong>{props.customerName(job)}</strong></div>
         <div className="schedule-meta">
           {job.address ? <span><MapPin size={13} />{job.address}</span> : null}
-          <span><Wrench size={13} />{job.service}</span>
+          <span><ServiceMark name={job.service} size={13} />{job.service}</span>
         </div>
         {job.notes ? <p className="board-notes">{job.notes}</p> : null}
       </div>
@@ -342,12 +343,12 @@ export default function ScheduleBoard(props: Props) {
                             key={job.id}
                             draggable
                             className={`event-chip outcome-${isSetmoreNoShow(job) ? 'paid' : props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
-                            title={isSetmoreNoShow(job) ? 'No-show' : job.missingFromSetmore ? 'Not in Setmore' : undefined}
+                            title={`${job.service}${isSetmoreNoShow(job) ? ' · No-show' : job.missingFromSetmore ? ' · Not in Setmore' : ''}`}
                             onDragStart={event => { event.stopPropagation(); props.onDragStart(event, `appt:${job.id}`); }}
                             onClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                             onDoubleClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                           >
-                            <b>{job.time}</b> {props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
+                            <b>{job.time}</b> <span className="chip-service-mark" aria-label={job.service}><ServiceMark name={job.service} size={12} /></span> {props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
                           </div>
                         ))}
                         {dayJobs.length === 0 && !outside && <span className="no-event">Open day</span>}
@@ -393,7 +394,7 @@ export default function ScheduleBoard(props: Props) {
                   <div className="notes-window-head">
                     <div className="notes-window-open">
                       <strong>{props.customerName(job)}</strong>
-                      <span>{rangeKind === 'day' ? props.timeRange(job) : job.time} · {job.service}</span>
+                      <span><ServiceMark name={job.service} size={12} />{rangeKind === 'day' ? props.timeRange(job) : job.time} · {job.service}</span>
                     </div>
                   </div>
                   {appointmentNote ? <p className="notes-window-note"><span>{appointmentNote}</span></p> : null}
