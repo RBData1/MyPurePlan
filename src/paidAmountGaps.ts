@@ -36,7 +36,8 @@ export function findPaidAmountGaps(jobs: ScheduleJobMoney[], invoices: InvoiceRe
       .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time) || a.service.localeCompare(b.service) || a.id.localeCompare(b.id));
     if (linked.length === 0) continue;
     const scheduleTotal = linked.reduce((sum, job) => sum + (Number(job.price) || 0), 0);
-    const quickfilePaid = invoice.paidAmount == null ? invoice.amount : invoice.paidAmount;
+    const recorded = invoice.paidAmount == null ? invoice.amount : invoice.paidAmount;
+    const quickfilePaid = invoice.paidAmount != null && invoice.paidAmount <= 0 && invoice.amount > 0 ? invoice.amount : recorded;
     if (moneyClose(scheduleTotal, invoice.amount) && moneyClose(scheduleTotal, quickfilePaid)) continue;
     gaps.push({
       invoiceId: invoice.quickfileInvoiceId,

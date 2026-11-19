@@ -6,6 +6,8 @@ export type QuickFileConnection = {
   accNumber: string;
   apiKey: string;
   applicationId: string;
+  /** Personal bearer token from QuickFile → Account Settings → Third Party Integration → API. */
+  restToken: string;
   vatMode: QuickFileVatMode;
   connectedAt: string | null;
   /** Secret from QuickFile → Webhooks. Used to verify payment notifications. */
@@ -16,6 +18,7 @@ export const defaultQuickFileConnection = (): QuickFileConnection => ({
   accNumber: '',
   apiKey: '',
   applicationId: '',
+  restToken: '',
   vatMode: 'exempt',
   connectedAt: null,
   webhookSecret: '',
@@ -47,7 +50,17 @@ export function writeQuickFileConnection(businessId: string | null, value: Quick
 }
 
 export function isQuickFileConnected(conn: QuickFileConnection) {
-  return Boolean(conn.accNumber.trim() && conn.apiKey.trim() && conn.applicationId.trim() && conn.connectedAt);
+  const legacy = Boolean(conn.accNumber.trim() && conn.apiKey.trim() && conn.applicationId.trim());
+  return Boolean(conn.connectedAt && (conn.restToken.trim() || legacy));
+}
+
+function connectionBody(conn: QuickFileConnection) {
+  return {
+    accNumber: conn.accNumber,
+    apiKey: conn.apiKey,
+    applicationId: conn.applicationId,
+    restToken: conn.restToken,
+  };
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
@@ -67,28 +80,20 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export async function findQuickFileInvoice(conn: QuickFileConnection, invoiceNumber: string) {
   return postJson<{ invoice: { invoiceId: number; state: 'paid' | 'unpaid' | 'part' | 'void'; paidAt: string | null; paidAmount: number | null; clientName: string | null; address: string | null; total: number | null; invoiceNumber: string; issueDate: string | null } }>('/api/quickfile/invoice-lookup', {
-    accNumber: conn.accNumber,
-    apiKey: conn.apiKey,
-    applicationId: conn.applicationId,
+    ...connectionBody(conn),
     invoiceNumber,
   });
 }
 
 export async function checkQuickFileInvoices(conn: QuickFileConnection, invoiceIds: number[]) {
   return postJson<{ invoices: Array<{ invoiceId: number; state: 'paid' | 'unpaid' | 'part' | 'void'; paidAt: string | null; paidAmount: number | null; clientName: string | null; address: string | null; total: number | null }> }>('/api/quickfile/invoice-status', {
-    accNumber: conn.accNumber,
-    apiKey: conn.apiKey,
-    applicationId: conn.applicationId,
+    ...connectionBody(conn),
     invoiceIds,
   });
 }
 
 export async function testQuickFileConnection(conn: QuickFileConnection) {
-  return postJson<{ ok: true; clientsFound: number }>('/api/quickfile/test', {
-    accNumber: conn.accNumber,
-    apiKey: conn.apiKey,
-    applicationId: conn.applicationId,
-  });
+  return postJson<{ ok: true; clientsFound: number }>('/api/quickfile/test', connectionBody(conn));
 }
 
 export async function createQuickFileInvoiceRequest(
@@ -108,9 +113,7 @@ export async function createQuickFileInvoiceRequest(
   },
 ) {
   return postJson<{ clientId: number; invoiceId: number; invoiceNumber: string }>('/api/quickfile/create-invoice', {
-    accNumber: conn.accNumber,
-    apiKey: conn.apiKey,
-    applicationId: conn.applicationId,
+    ...connectionBody(conn),
     vatMode: conn.vatMode,
     ...payload,
   });

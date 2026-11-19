@@ -288,7 +288,7 @@ td strong{font-size:13px;color:#1f3148}
 .setmore-import-history-main b{font-size:12px;color:#1f3148}
 .setmore-import-history-main span{font-size:11px;color:#5a6d84;word-break:break-word}
 .setmore-import-history-meta{display:flex;flex-wrap:wrap;gap:8px 12px;font-size:11px;color:#6f7f94}
-.button:disabled{opacity:.65;cursor:wait}
+.button:disabled{opacity:.65;cursor:wait}.button.is-saved:disabled{cursor:default}
 
 .board-heading{align-items:flex-end}
 .board-copy-range{display:flex;flex-wrap:wrap;align-items:end;gap:10px 14px;margin:0 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#f7f9fc}
@@ -333,14 +333,19 @@ td strong{font-size:13px;color:#1f3148}
 .notes-window-note span{display:block;padding:8px 10px;border-radius:8px;background:#e7f0ff;border:1px solid #c5d6f2;color:#172c49;font-size:15px;font-weight:650;line-height:1.45;white-space:pre-wrap}
 .notes-window-empty{color:#6f7f94}
 .schedule-item.is-notes-focus,.event-chip.is-notes-focus{outline:2px solid #316de4;outline-offset:1px}
+.plan-window-backdrop{position:fixed;inset:0;z-index:45;background:rgba(17,31,52,.42);display:flex;align-items:center;justify-content:center;padding:28px}
+.plan-window{width:min(1180px,100%);height:min(100%,calc(100vh - 56px));background:#e8edf4;border-radius:16px;box-shadow:0 24px 70px rgba(17,32,58,.4);display:flex;flex-direction:column;overflow:hidden}
+.plan-window .list-screen{padding:22px 22px 16px}
+@media(max-width:720px){.plan-window-backdrop{padding:0}.plan-window{width:100%;height:100%;border-radius:0}.plan-window .list-screen{padding:16px 14px}}
 .board-plan{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:14px 12px;max-height:min(78vh,860px);overflow:auto}
 .board-plan .queue-card{grid-template-columns:minmax(0,1fr) auto}
-.event-chip.outcome-todo,.board-job.outcome-todo{background:#f4f8ff;border:1px solid #d7e4fa;border-left:4px solid #316de4;box-shadow:none}
-.event-chip.outcome-done,.board-job.outcome-done{background:#f3faf7;border:1px solid #cfe8df;border-left:4px solid #1a9c77;box-shadow:none}
-.event-chip.outcome-paid,.board-job.outcome-paid{background:#f5f6f8;border:1px solid #e2e6ec;border-left:4px solid #8d99a8;box-shadow:none}
-.board-job.outcome-todo:hover{background:#e8f0ff}
-.board-job.outcome-done:hover{background:#e5f6ef}
-.board-job.outcome-paid:hover{background:#eef1f4}
+.event-chip.outcome-todo,.board-job.outcome-todo{background:#b7d4ff;border:1px solid #8eb6f6;color:#1d3f86;box-shadow:none}
+.event-chip.outcome-done,.board-job.outcome-done{background:#a8ebc9;border:1px solid #7ad4a6;color:#14614a;box-shadow:none}
+.event-chip.outcome-paid,.board-job.outcome-paid,.customer-history-row.is-noshow{background:#e6e9ee;border:1px solid #d5dae2;color:#3e4a5a;box-shadow:none}
+.customer-history-row.is-noshow:hover{background:#dce0e6}
+.board-job.outcome-todo:hover,.event-chip.outcome-todo:hover{background:#a3c6ff}
+.board-job.outcome-done:hover,.event-chip.outcome-done:hover{background:#93e3b8}
+.board-job.outcome-paid:hover,.event-chip.outcome-paid:hover{background:#dce0e6}
 .event-chip.outcome-todo,.event-chip.outcome-done,.event-chip.outcome-paid{border-radius:7px}
 .job-quick-actions .button.status-done,.job-quick-actions .button.status-pay,.job-quick-actions .button.status-paid{border:1px solid transparent;border-radius:999px;font-weight:700;color:#fff;box-shadow:none}
 .job-quick-actions .button.status-done{background:#316de4;border-color:#316de4}
@@ -617,6 +622,12 @@ html{scrollbar-gutter:stable}
 .quote-history-row span{color:var(--muted);font-size:12px}
 .quote-print-sheet{display:none}
 @media(max-width:980px){.quote-layout,.quote-plans{grid-template-columns:1fr}}
+.settings-subsection{margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
+.settings-subsection h3{margin:0 0 6px;font-size:14px}
+.settings-subsection p,.settings-legacy p{margin:0 0 12px;color:#6f7f94;font-size:13px;line-height:1.45}
+.settings-legacy{margin-top:16px}
+.settings-legacy summary{cursor:pointer;font-size:13px;font-weight:700;color:#5c6e86}
+.settings-legacy[open] summary{margin-bottom:8px}
 @media print{
   .sidebar,.topbar,.footer,.quote-input,.quote-tools,.page-heading,.quote-summary{display:none!important}
   .main-area{margin:0!important;width:auto!important}

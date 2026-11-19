@@ -2,6 +2,7 @@
 
 import type { supabase as supabaseClient } from './supabase';
 import { defaultQuickFileConnection, isQuickFileConnected, type QuickFileConnection, type QuickFileVatMode } from './quickfile';
+import { isSetmoreNoShow } from './setmoreImport';
 
 export type InvoiceStatus = 'unpaid' | 'paid' | 'void';
 
@@ -90,12 +91,16 @@ export function combineInvoiceSources(cloud: InvoiceRecord[], cache: InvoiceReco
       id: cloudRow?.id || prev.id || row.id,
       status: paid ? 'paid' : voided ? 'void' : 'unpaid',
       paidAt: paid ? (row.paidAt || prev.paidAt) : null,
-      paidAmount: paid ? (row.paidAmount ?? prev.paidAmount) : null,
+      paidAmount: paid ? (positivePaid(row) ?? positivePaid(prev) ?? (row.amount > 0 ? row.amount : prev.amount)) : null,
       paymentMethod: paid ? (row.paymentMethod || prev.paymentMethod) : null,
       appointmentId: row.appointmentId ?? prev.appointmentId,
     });
   }
   return [...map.values()].sort((a, b) => String(b.issuedAt).localeCompare(String(a.issuedAt)));
+}
+
+function positivePaid(row: Pick<InvoiceRecord, 'paidAmount'>) {
+  return row.paidAmount != null && row.paidAmount > 0 ? row.paidAmount : null;
 }
 
 function visitLabel(value: string) {
@@ -123,6 +128,8 @@ type InvoicedVisit = {
   quickfileInvoiceNumber?: string | null;
   quickfileInvoicedAt?: string | null;
   address?: string;
+  notes?: string;
+  noShow?: boolean;
 };
 
 /**
@@ -139,7 +146,7 @@ export function invoicesNeedingQuickFileIdentity<T extends InvoicedVisit>(
   return invoices.filter(invoice => {
     if (invoice.source === 'local' || invoice.quickfileInvoiceId <= 0 || invoice.status === 'void' || !invoice.jobDate) return false;
     if (appointments.some(job => job.status !== 'Cancelled' && job.quickfileInvoiceId === invoice.quickfileInvoiceId)) return false;
-    const free = appointments.filter(job => job.status !== 'Cancelled' && job.date === invoice.jobDate && (job.quickfileInvoiceId == null || job.quickfileInvoiceId < 0));
+    const free = appointments.filter(job => job.status !== 'Cancelled' && !isSetmoreNoShow(job) && job.date === invoice.jobDate && (job.quickfileInvoiceId == null || job.quickfileInvoiceId < 0));
     if (!free.length) return false;
     const wanted = visitLabel(invoice.customerName);
     const named = wanted ? free.filter(job => person(job.customerId) === wanted && invoiceServiceMatches(invoice.service, job.service)) : [];
@@ -166,7 +173,7 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
   const invoicesNext = invoices.map(invoice => ({ ...invoice }));
   const holdersOf = (invoiceId: number) => next.filter(appointment => !removed.has(appointment.id) && appointment.quickfileInvoiceId === invoiceId);
   const freeFor = (invoice: InvoiceRecord, appointment: T) => {
-    if (removed.has(appointment.id) || appointment.status === 'Cancelled') return false;
+    if (removed.has(appointment.id) || appointment.status === 'Cancelled' || isSetmoreNoShow(appointment)) return false;
     const current = appointment.quickfileInvoiceId;
     if (invoice.quickfileInvoiceId > 0) return current == null || current < 0;
     return !current;
@@ -204,7 +211,7 @@ export function settleInvoicedVisits<T extends InvoicedVisit>(
 
   const groups = new Map<string, T[]>();
   for (const appointment of next) {
-    if (removed.has(appointment.id) || appointment.status === 'Cancelled') continue;
+    if (removed.has(appointment.id) || appointment.status === 'Cancelled' || isSetmoreNoShow(appointment)) continue;
     const source = appointment.calendarSource === 'square' || appointment.squareBookingId ? 'square' : 'setmore';
     const key = `${person(appointment.customerId)}|${appointment.date}|${appointment.time}|${visitLabel(appointment.service)}|${source}`;
     const group = groups.get(key);
@@ -281,7 +288,12 @@ function rowToInvoice(row: Record<string, unknown>): InvoiceRecord {
     dueAt: row.due_at ? String(row.due_at).slice(0, 10) : null,
     status: status === 'paid' || status === 'void' ? status : 'unpaid',
     paidAt: row.paid_at ? String(row.paid_at) : null,
-    paidAmount: row.paid_amount == null ? null : Number(row.paid_amount),
+    paidAmount: (() => {
+      const paidAmount = row.paid_amount == null ? null : Number(row.paid_amount);
+      const amount = Number(row.amount || 0);
+      if (status === 'paid' && (paidAmount == null || paidAmount <= 0) && amount > 0) return amount;
+      return paidAmount;
+    })(),
     paymentMethod: row.payment_method ? String(row.payment_method) : null,
   };
 }
@@ -335,6 +347,7 @@ function quickFileFromSettings(raw: unknown): QuickFileConnection {
     accNumber: String(parsed.accNumber || ''),
     apiKey: String(parsed.apiKey || ''),
     applicationId: String(parsed.applicationId || ''),
+    restToken: String(parsed.restToken || ''),
     webhookSecret: String(parsed.webhookSecret || ''),
     connectedAt: parsed.connectedAt ? String(parsed.connectedAt) : null,
     vatMode,
@@ -372,6 +385,7 @@ export async function saveQuickFileIntegration(
       accNumber,
       apiKey: connection.apiKey.trim(),
       applicationId: connection.applicationId.trim(),
+      restToken: connection.restToken.trim(),
       vatMode: connection.vatMode,
       webhookSecret: connection.webhookSecret.trim(),
       connectedAt: connected ? connection.connectedAt : null,

@@ -51,6 +51,8 @@ export type ImportAppointment = {
   quickfileInvoicedAt?: string | null;
   /** Invoiced job that the latest Setmore report no longer lists. Kept on the calendar. */
   missingFromSetmore?: boolean;
+  /** Setmore label No-Show: the slot happened, but no work was done. */
+  noShow?: boolean;
   /** Square Appointments id. Setmore import never rewrites these jobs. */
   squareBookingId?: string;
   calendarSource?: 'setmore' | 'square';
@@ -641,10 +643,34 @@ function splitAddress(raw: string): { address: string; town: string; postcode: s
   return { address: bits.slice(0, -1).join(', '), town: bits[bits.length - 1], postcode };
 }
 
+const NO_SHOW_TEXT = /no[-\s]?show/i;
+
+/** Setmore label or a job note that starts with no-show. The visit stays visible and is not payable. */
+export function isSetmoreNoShow(value: { noShow?: boolean; notes?: string } | null | undefined): boolean {
+  if (!value) return false;
+  return Boolean(value.noShow) || /^\s*no[-\s]?show\b/i.test(value.notes || '');
+}
+
+function rowMarkedNoShow(row: CsvRow): boolean {
+  for (const [header, value] of Object.entries(row)) {
+    const text = value?.trim();
+    if (!text || !NO_SHOW_TEXT.test(text)) continue;
+    if (
+      headerMatchesAlias(header, 'label')
+      || headerMatchesAlias(header, 'status')
+      || headerMatchesAlias(header, 'appointment status')
+      || headerMatchesAlias(header, 'booking status')
+      || headerMatchesAlias(header, 'state')
+    ) return true;
+  }
+  return false;
+}
+
 function mapStatus(raw: string, date: string, paidHint: boolean): ImportAppointment['status'] {
   const s = raw.trim().toLowerCase();
+  if (NO_SHOW_TEXT.test(s)) return 'Confirmed';
   if (paidHint || /\bpaid\b/.test(s)) return 'Completed';
-  if (/cancel|no[-\s]?show|deleted|rejected/.test(s)) return 'Cancelled';
+  if (/cancel|deleted|rejected/.test(s)) return 'Cancelled';
   if (/complete|done|finished|closed|checked\s*out/.test(s)) return 'Completed';
   if (/pending|request|await|unconfirm/.test(s)) return 'Pending';
   if (/confirm|booked|approved|accepted|arrived|show/.test(s)) return 'Confirmed';
@@ -872,6 +898,7 @@ type IncomingSetmoreJob = {
   bookingId: string;
   paid: boolean;
   frequency: number;
+  noShow: boolean;
 };
 
 function inReportRange(date: string, from: string | null, to: string | null) {
@@ -916,7 +943,8 @@ function reconcileSetmoreSchedule(
       duration: job.duration,
       service: job.service,
       price: Number.isFinite(job.price) ? job.price : prev.price,
-      status: prev.quickfileInvoiceId ? 'Completed' : job.status,
+      status: job.noShow ? 'Confirmed' : (prev.quickfileInvoiceId ? 'Completed' : job.status),
+      noShow: job.noShow,
       address: job.address || prev.address,
       notes: job.notes || prev.notes,
       setmoreBookingId: job.bookingId || prev.setmoreBookingId,
@@ -926,7 +954,7 @@ function reconcileSetmoreSchedule(
     consumed.add(incomingIndex);
     if (timeChanged) moved += 1;
     else updated += 1;
-    if (job.paid && !payments.some(p => p.appointmentId === prev.id && p.paidAt)) {
+    if (job.paid && !job.noShow && !payments.some(p => p.appointmentId === prev.id && p.paidAt)) {
       payments.push({
         id: crypto.randomUUID(),
         appointmentId: prev.id,
@@ -1002,6 +1030,7 @@ function reconcileSetmoreSchedule(
       service: job.service,
       price: job.price,
       status: job.status,
+      noShow: job.noShow || undefined,
       address: job.address,
       notes: job.notes || undefined,
       oneOff: false,
@@ -1241,8 +1270,9 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
     }
 
     const statusRaw = pickField(row, 'status');
-    const paid = detectPaid(row, statusRaw);
-    const status = mapStatus(statusRaw, start.date, paid);
+    const noShow = rowMarkedNoShow(row);
+    const paid = !noShow && detectPaid(row, statusRaw);
+    const status = noShow ? 'Confirmed' : mapStatus(statusRaw, start.date, paid);
     const customer = customers.find(c => c.id === customerId)!;
     const addressSnapshot = customerProperty(customer) || address || '';
     incomingJobs.push({
@@ -1257,6 +1287,7 @@ export function applySetmoreRows(rows: CsvRow[], existing: SetmoreExisting, meta
       notes: jobNotes,
       bookingId: pickField(row, 'bookingId').trim(),
       paid,
+      noShow,
       frequency: customer.frequency || 6,
     });
   }

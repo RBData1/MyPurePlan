@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Pause, Search, Undo2 } from 'lucide-react';
+import { Check, Pause, Search, Undo2, X } from 'lucide-react';
 
 const CYCLES = [4, 6, 8, 10, 12] as const;
 export type PlanCycle = 'all' | (typeof CYCLES)[number];
@@ -28,6 +28,7 @@ type Props = {
   onHold: (id: string) => void;
   onRelease: (id: string) => void;
   onOpen: (id: string) => void;
+  onClose?: () => void;
   dateLabel: (date: string) => string;
 };
 
@@ -153,6 +154,7 @@ export default function SetmorePlan(props: Props) {
           <button type="button" className={`button secondary${showHold ? ' chosen' : ''}`} aria-pressed={showHold} onClick={() => setShowHold(open => !open)}>
             <Pause size={16} /> On hold{heldTotal ? ` · ${heldTotal}` : ''}
           </button>
+          {props.onClose && <button type="button" className="icon-button" aria-label="Close" title="Close" onClick={props.onClose}><X size={18} /></button>}
         </div>
       </div>
       <div className="panel table-panel">

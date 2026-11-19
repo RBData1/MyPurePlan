@@ -22,6 +22,8 @@ export type QuickFileCredentials = {
   accNumber: string;
   apiKey: string;
   applicationId: string;
+  /** Personal bearer token for https://api-beta.quickfile.co.uk */
+  restToken?: string;
 };
 
 export type QuickFileVatMode = 'exempt' | 'standard20_gross' | 'standard20_net';
@@ -208,6 +210,7 @@ function readInvoiceStatus(result: any) {
 
 /** Ask QuickFile for the current status of invoices the webhook may have missed. */
 export async function fetchQuickFileInvoicePayments(creds: QuickFileCredentials, invoiceIds: number[]): Promise<QuickFileInvoicePayment[]> {
+  if (usesRest(creds)) return fetchQuickFileInvoicePaymentsRest(creds, invoiceIds);
   const unique = [...new Set(invoiceIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0))].slice(0, 40);
   const out: QuickFileInvoicePayment[] = [];
   for (const invoiceId of unique) {
@@ -257,6 +260,7 @@ function collectInvoiceRecords(result: any): any[] {
 
 /** Find a QuickFile invoice that was created earlier, including one typed in by hand. */
 export async function findQuickFileInvoiceByNumber(creds: QuickFileCredentials, invoiceNumber: string): Promise<QuickFileFoundInvoice> {
+  if (usesRest(creds)) return findQuickFileInvoiceByNumberRest(creds, invoiceNumber);
   const wanted = invoiceNumber.trim();
   const key = invoiceNumberKey(wanted);
   if (!key) throw new Error('Enter the QuickFile invoice number.');
@@ -291,6 +295,7 @@ export async function findQuickFileInvoiceByNumber(creds: QuickFileCredentials, 
 }
 
 export async function testQuickFileConnection(creds: QuickFileCredentials): Promise<{ ok: true; clientsFound: number }> {
+  if (usesRest(creds)) return testQuickFileConnectionRest(creds);
   const result: any = await quickfilePost('client/search', creds, {
     SearchParameters: {
       ReturnCount: 1,
@@ -381,6 +386,7 @@ async function syncQuickFileClientName(creds: QuickFileCredentials, clientId: nu
 }
 
 export async function ensureQuickFileClient(creds: QuickFileCredentials, client: QuickFileClientInput): Promise<number> {
+  if (usesRest(creds)) return ensureQuickFileClientRest(creds, client);
   const displayName = String(client.name || '').trim() || 'Customer';
   const existing = await searchClientId(creds, client);
   if (existing) {
@@ -493,6 +499,7 @@ export async function createQuickFileInvoice(
     termDays?: number;
   },
 ): Promise<{ clientId: number; invoiceId: number; invoiceNumber: string }> {
+  if (usesRest(creds)) return createQuickFileInvoiceRest(creds, input);
   const lines = input.lines.filter(line => String(line?.service || '').trim() || Number(line?.price) > 0);
   if (!lines.length) throw new Error('Add at least one service before creating an invoice.');
   const clientId = await ensureQuickFileClient(creds, input.client);
@@ -564,6 +571,9 @@ function explainQuickFileError(message: string) {
   if (text.includes('not permitted') || text.includes('not authorised') || text.includes('not authorized') || text.includes('access denied')) {
     return `${cleaned} In QuickFile → Create a QuickFile App, enable the method named in that error.`;
   }
+  if (text.includes('cannot load the schema')) {
+    return 'QuickFile’s older API cannot load its schema right now. In Settings → QuickFile paste the REST API token, then press Connect QuickFile.';
+  }
   return cleaned;
 }
 
@@ -571,11 +581,302 @@ export function parseCredentials(body: any, fallbackAppId?: string): QuickFileCr
   const accNumber = String(body?.accNumber || body?.accountNumber || '').trim();
   const apiKey = String(body?.apiKey || '').trim();
   const applicationId = String(body?.applicationId || fallbackAppId || '').trim();
+  const restToken = String(body?.restToken || '').trim();
+  if (restToken) return { accNumber, apiKey, applicationId, restToken };
   if (!accNumber || !apiKey || !applicationId) {
-    throw new Error('Account number, API key and Application ID are all required.');
+    throw new Error('Paste the REST API token, or the account number, API key and Application ID.');
   }
   if (accNumber.includes('@') || !/^\d{4,12}$/.test(accNumber)) {
     throw new Error('Account number must be the numeric QuickFile account number from Account Settings, not your login email.');
   }
   return { accNumber, apiKey, applicationId };
+}
+
+const QUICKFILE_REST = 'https://api-beta.quickfile.co.uk';
+
+function usesRest(creds: QuickFileCredentials) {
+  return Boolean(creds.restToken?.trim());
+}
+
+function restAuthorization(token: string) {
+  const trimmed = token.trim();
+  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+}
+
+function restErrorMessage(json: any, text: string, status: number) {
+  const nested = json?.error;
+  if (nested && typeof nested === 'object' && typeof nested.message === 'string' && nested.message.trim()) return nested.message.trim();
+  if (typeof json?.message === 'string' && json.message.trim()) return json.message.trim();
+  if (typeof json?.error === 'string' && json.error.trim()) return json.error.trim();
+  if (json?.errors && typeof json.errors === 'object') {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(json.errors)) {
+      const list = Array.isArray(value) ? value : [value];
+      for (const item of list) {
+        if (item) parts.push(`${key}: ${item}`);
+      }
+    }
+    if (parts.length) return parts.join(' · ');
+  }
+  return text.slice(0, 240) || `QuickFile HTTP ${status}`;
+}
+
+async function restFetch(creds: QuickFileCredentials, method: string, path: string, body?: unknown) {
+  ensureSystemCertificates();
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: restAuthorization(creds.restToken || ''),
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  let res: Response;
+  try {
+    res = await fetch(`${QUICKFILE_REST}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : '';
+    const intercepted = /certificate|UNABLE_TO_VERIFY/i.test(cause);
+    throw new Error(
+      intercepted
+        ? `Could not reach QuickFile because HTTPS is being intercepted (${cause}). Turn off HTTPS scanning in Avast Web Shield, then connect again.`
+        : `Could not reach QuickFile${cause ? `: ${cause}` : '.'}`,
+    );
+  }
+  const text = await res.text();
+  let json: any = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+  if (!res.ok) {
+    throw new Error(restErrorMessage(json, text, res.status));
+  }
+  return json;
+}
+
+function restRows(result: any) {
+  if (Array.isArray(result?.data)) return result.data as any[];
+  if (Array.isArray(result)) return result as any[];
+  return [];
+}
+
+async function restClients(creds: QuickFileCredentials, query: Record<string, string | number>) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) params.set(key, String(value));
+  const result = await restFetch(creds, 'GET', `/clients?${params.toString()}`);
+  return restRows(result);
+}
+
+function restClientId(row: any) {
+  const id = Number(row?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function restInvoiceState(status: string): QuickFileInvoicePayment['state'] {
+  const raw = status.trim().toLowerCase().replace(/[\s_-]/g, '');
+  if (['paid', 'paidfull', 'paidinfull'].includes(raw)) return 'paid';
+  if (['part', 'partial', 'paidpart', 'partpaid', 'partiallypaid'].includes(raw)) return 'part';
+  if (['deleted', 'void', 'cancelled', 'canceled', 'writtenoff'].includes(raw)) return 'void';
+  return 'unpaid';
+}
+
+function paymentFromRestInvoice(invoiceId: number, details: any): QuickFileInvoicePayment {
+  const state = restInvoiceState(String(details?.status || ''));
+  const gross = Number(details?.gross_total);
+  const balance = Number(details?.balance);
+  const total = Number.isFinite(gross) ? gross : null;
+  // On a paid-in-full invoice the REST balance stays equal to the total, so
+  // gross minus balance is not the money received. PAIDFULL collected the total.
+  let paidAmount: number | null = null;
+  if (state === 'paid') paidAmount = total;
+  else if (state === 'part' && Number.isFinite(gross) && Number.isFinite(balance) && balance < gross) {
+    paidAmount = Math.round((gross - balance) * 100) / 100;
+  }
+  const clientName = String(details?.client_company_name || details?.client_contact_name || '').trim() || null;
+  const address = String(details?.client_address || '').replace(/\s+/g, ' ').trim() || null;
+  return {
+    invoiceId,
+    state,
+    paidAt: null,
+    paidAmount: state === 'unpaid' || state === 'void' ? null : paidAmount,
+    clientName,
+    address,
+    total,
+  };
+}
+
+async function testQuickFileConnectionRest(creds: QuickFileCredentials): Promise<{ ok: true; clientsFound: number }> {
+  const rows = await restClients(creds, { limit: 1, offset: 0, order_column: 'created_date', order_direction: 'desc' });
+  return { ok: true, clientsFound: rows.length };
+}
+
+async function searchClientIdRest(creds: QuickFileCredentials, client: QuickFileClientInput): Promise<number | null> {
+  if (client.quickfileClientId && Number.isFinite(client.quickfileClientId)) return Number(client.quickfileClientId);
+  const email = String(client.email || '').trim();
+  if (email) {
+    const rows = await restClients(creds, { email, limit: 5, offset: 0, order_column: 'company_name', order_direction: 'asc' });
+    const wanted = String(client.name || '').trim().toLowerCase();
+    const exact = wanted ? rows.find(row => String(row?.company_name || '').trim().toLowerCase() === wanted) : null;
+    const exactId = exact ? restClientId(exact) : null;
+    if (exactId) return exactId;
+    if (rows.length === 1) return restClientId(rows[0]);
+  }
+  const name = String(client.name || '').trim();
+  if (name) {
+    const rows = await restClients(creds, { company_name: name, limit: 5, offset: 0, order_column: 'company_name', order_direction: 'asc' });
+    const exact = rows.find(row => String(row?.company_name || '').trim().toLowerCase() === name.toLowerCase());
+    const exactId = exact ? restClientId(exact) : null;
+    if (exactId) return exactId;
+    if (rows.length === 1) return restClientId(rows[0]);
+  }
+  return null;
+}
+
+async function ensureQuickFileClientRest(creds: QuickFileCredentials, client: QuickFileClientInput): Promise<number> {
+  const displayName = String(client.name || '').trim() || 'Customer';
+  const existing = await searchClientIdRest(creds, client);
+  if (existing) {
+    try {
+      await restFetch(creds, 'PUT', `/clients/${existing}`, { company_name: displayName.slice(0, 100) });
+    } catch {
+      // Name sync is best-effort.
+    }
+    return existing;
+  }
+  const { firstName, surname } = splitName(displayName);
+  const created = await restFetch(creds, 'POST', '/clients', {
+    company_name: displayName.slice(0, 100),
+    address_line1: (client.address || 'Address not provided').slice(0, 75),
+    town: client.town ? String(client.town).slice(0, 75) : undefined,
+    country_iso: 'GB',
+    post_code: (client.postcode || 'UNKNOWN').slice(0, 15),
+  });
+  const createdId = restClientId(created);
+  if (!createdId) throw new Error('QuickFile did not return a client id. Enable Clients on the REST API token, then connect again.');
+  const email = String(client.email || '').trim();
+  if (email) {
+    const phones = [client.phone, client.phone2].map(phone => String(phone || '').trim()).filter(Boolean);
+    try {
+      await restFetch(creds, 'POST', `/clients/${createdId}/contacts`, {
+        first_name: firstName.slice(0, 50),
+        surname: surname.slice(0, 50),
+        email: email.slice(0, 100),
+        is_default: true,
+        telephone1: phones[0]?.slice(0, 20),
+        telephone2: phones[1]?.slice(0, 20),
+      });
+    } catch {
+      // The client exists; the invoice can still be created without a contact.
+    }
+  }
+  return createdId;
+}
+
+function buildRestInvoiceLine(line: QuickFileInvoiceLineInput, vatMode: QuickFileVatMode) {
+  const { unitCost, taxPercentage, taxAmount } = moneyParts(line.price, vatMode);
+  const itemNameRaw = String(line.service || 'Service').trim() || 'Service';
+  const itemName = itemNameRaw.slice(0, 25);
+  const address = String(line.description || '').trim();
+  const description = [itemNameRaw, address].filter(Boolean).join('\n').slice(0, 5000);
+  const row: Record<string, unknown> = {
+    item_name: itemName,
+    description: description || itemName,
+    nominal_code: 4000,
+    unit_cost: Number(unitCost.toFixed(2)),
+    qty: 1,
+    vat_rate: taxPercentage,
+  };
+  if (taxPercentage > 0) row.vat_amount = Number(taxAmount.toFixed(2));
+  return row;
+}
+
+async function createQuickFileInvoiceRest(
+  creds: QuickFileCredentials,
+  input: {
+    client: QuickFileClientInput;
+    lines: QuickFileInvoiceLineInput[];
+    vatMode: QuickFileVatMode;
+    termDays?: number;
+  },
+): Promise<{ clientId: number; invoiceId: number; invoiceNumber: string }> {
+  const lines = input.lines.filter(line => String(line?.service || '').trim() || Number(line?.price) > 0);
+  if (!lines.length) throw new Error('Add at least one service before creating an invoice.');
+  const clientId = await ensureQuickFileClientRest(creds, input.client);
+  const invoiceBody: Record<string, unknown> = {
+    type: 'invoice',
+    client_id: clientId,
+    currency: 'GBP',
+    term_days: input.termDays ?? 14,
+    language: 'en',
+    description: invoiceHeading(lines),
+    issue_date: lines.find(line => line.date)?.date || new Date().toISOString().slice(0, 10),
+    item_lines: lines.map(line => buildRestInvoiceLine(line, input.vatMode)),
+  };
+  if (input.vatMode === 'exempt') invoiceBody.vat_codes = ['exempt'];
+  const created = await restFetch(creds, 'POST', '/invoices', invoiceBody);
+  const invoiceId = Number(created?.id);
+  const invoiceNumber = String(created?.invoice_number || invoiceId || '').trim();
+  if (!Number.isFinite(invoiceId) || invoiceId <= 0) {
+    throw new Error('QuickFile did not return an invoice id. Enable Invoices on the REST API token, then connect again.');
+  }
+  const sendByEmail = Boolean(String(input.client.email || '').trim());
+  try {
+    await restFetch(creds, 'POST', `/invoices/${invoiceId}/send`, {
+      by_email: sendByEmail,
+      by_snail_mail: false,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invoice ${invoiceNumber || invoiceId} created as draft, but could not mark as Sent: ${detail}. Enable Invoices on the REST API token.`);
+  }
+  return { clientId, invoiceId, invoiceNumber };
+}
+
+async function fetchQuickFileInvoicePaymentsRest(creds: QuickFileCredentials, invoiceIds: number[]): Promise<QuickFileInvoicePayment[]> {
+  const unique = [...new Set(invoiceIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0))].slice(0, 40);
+  const out: QuickFileInvoicePayment[] = [];
+  for (const invoiceId of unique) {
+    const details = await restFetch(creds, 'GET', `/invoices/${invoiceId}`);
+    if (!details?.status && !details?.id) throw new Error('QuickFile did not return an invoice status. Enable Invoices on the REST API token, then try again.');
+    out.push(paymentFromRestInvoice(invoiceId, details));
+  }
+  return out;
+}
+
+async function findQuickFileInvoiceByNumberRest(creds: QuickFileCredentials, invoiceNumber: string): Promise<QuickFileFoundInvoice> {
+  const wanted = invoiceNumber.trim();
+  const key = invoiceNumberKey(wanted);
+  if (!key) throw new Error('Enter the QuickFile invoice number.');
+  const queries = [...new Set([wanted, key.padStart(6, '0'), key])];
+  let invoiceId: number | null = null;
+  let number = wanted;
+  let issueDate: string | null = null;
+  for (const query of queries) {
+    const params = new URLSearchParams({
+      invoice_number: query,
+      type: 'invoice',
+      limit: '20',
+      offset: '0',
+      order_column: 'invoice_number',
+      order_direction: 'desc',
+    });
+    const result = await restFetch(creds, 'GET', `/invoices?${params.toString()}`);
+    const match = restRows(result).find(record => invoiceNumberKey(String(record.invoice_number || '')) === key);
+    const foundId = Number(match?.id);
+    if (match && Number.isFinite(foundId) && foundId > 0) {
+      invoiceId = foundId;
+      number = String(match.invoice_number || query);
+      issueDate = match.issue_date ? String(match.issue_date).slice(0, 10) : null;
+      break;
+    }
+  }
+  if (!invoiceId) throw new Error(`QuickFile has no invoice numbered ${wanted}.`);
+  const [details] = await fetchQuickFileInvoicePaymentsRest(creds, [invoiceId]);
+  if (!details) throw new Error(`QuickFile invoice ${number} could not be read. Enable Invoices on the REST API token.`);
+  return { ...details, invoiceNumber: number, issueDate: issueDate || null };
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, Search, StickyNote, Upload, Wrench, X } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, StickyNote, Upload, Wrench } from 'lucide-react';
 import UkDateInput from './UkDateInput';
+import { isSetmoreNoShow } from './setmoreImport';
 
 export type ScheduleJob = {
   id: string;
@@ -13,14 +14,7 @@ export type ScheduleJob = {
   notes?: string;
   customerNotes?: string;
   missingFromSetmore?: boolean;
-};
-
-export type WaitingCustomer = {
-  id: string;
-  name: string;
-  place: string;
-  lastVisit: string | null;
-  price: number;
+  noShow?: boolean;
 };
 
 type Mode = 'Day' | 'Week' | 'Month';
@@ -36,10 +30,7 @@ type Props = {
   planOpen: boolean;
   setPlanOpen: (open: boolean) => void;
   jobs: ScheduleJob[];
-  waiting: WaitingCustomer[];
   waitingTotal: number;
-  search: string;
-  setSearch: (value: string) => void;
   customerName: (job: ScheduleJob) => string;
   outcome: (job: ScheduleJob) => 'todo' | 'done' | 'paid';
   timeRange: (job: ScheduleJob) => string;
@@ -193,7 +184,7 @@ export default function ScheduleBoard(props: Props) {
   const card = (job: ScheduleJob, openEditor = false) => (
     <div
       key={job.id}
-      className={`schedule-item schedule-item-clickable board-job outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
+      className={`schedule-item schedule-item-clickable board-job outcome-${isSetmoreNoShow(job) ? 'paid' : props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
       draggable
       role="button"
       tabIndex={0}
@@ -265,7 +256,7 @@ export default function ScheduleBoard(props: Props) {
             <button type="button" className="icon-button" aria-label="Next" onClick={() => move(1)}><ChevronRight size={16} /></button>
             <button type="button" className="button tiny secondary" onClick={() => props.setSelectedDate(props.today)}>Today</button>
           </div>
-          <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(!props.planOpen)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
+          <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(true)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
           <button type="button" className="button secondary" onClick={props.onCheckQuickFile} disabled={props.checkingQuickFile}><RefreshCw size={16} /> {props.checkingQuickFile ? 'Checking…' : 'Check QuickFile'}</button>
           <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importLabel}</button>
           {props.source === 'square' && props.onCopySetmore && (
@@ -303,7 +294,7 @@ export default function ScheduleBoard(props: Props) {
         )}
       </div>
 
-      <div className={`board-layout${props.planOpen ? ' has-plan' : ''}`}>
+      <div className="board-layout">
         <div className="panel board-main">
           {props.view === 'list' && (
             <div className="schedule-list">
@@ -350,8 +341,8 @@ export default function ScheduleBoard(props: Props) {
                           <div
                             key={job.id}
                             draggable
-                            className={`event-chip outcome-${props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
-                            title={job.missingFromSetmore ? 'Not in Setmore' : undefined}
+                            className={`event-chip outcome-${isSetmoreNoShow(job) ? 'paid' : props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
+                            title={isSetmoreNoShow(job) ? 'No-show' : job.missingFromSetmore ? 'Not in Setmore' : undefined}
                             onDragStart={event => { event.stopPropagation(); props.onDragStart(event, `appt:${job.id}`); }}
                             onClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                             onDoubleClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
@@ -414,29 +405,6 @@ export default function ScheduleBoard(props: Props) {
           </div>
         </aside>
 
-        {props.planOpen && (
-          <aside className="board-plan">
-            <div className="unassigned-rail-head">
-              <h3>To plan</h3>
-              <button type="button" className="icon-button" aria-label="Close to plan" onClick={() => props.setPlanOpen(false)}><X size={16} /></button>
-            </div>
-            <p className="queue-hint">No upcoming visit. Use this list when you build the round in Setmore.</p>
-            <div className="search-field schedule-search"><Search size={16} /><input value={props.search} onChange={event => props.setSearch(event.target.value)} placeholder="Name or postcode" /></div>
-            <div className="queue-list">
-              {props.waitingTotal === 0 && <div className="day-panel-empty">Everyone has an upcoming visit.</div>}
-              {props.waitingTotal > 0 && props.waiting.length === 0 && <div className="day-panel-empty">No customers match.</div>}
-              {props.waiting.map(customer => (
-                <div key={customer.id} className="queue-card" draggable onDragStart={event => props.onDragStart(event, `cust:${customer.id}`)}>
-                  <div className="queue-card-info">
-                    <strong>{customer.name}</strong>
-                    <span>{customer.place || 'No address'}{customer.lastVisit ? ` · Last ${props.dateLabel(customer.lastVisit)}` : ' · No past visit'}</span>
-                  </div>
-                  <button type="button" className="round-plus" title={`Book ${customer.name}`} onClick={() => props.onAdd(customer.id)}><Plus size={15} /></button>
-                </div>
-              ))}
-            </div>
-          </aside>
-        )}
       </div>
     </>
   );
