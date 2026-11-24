@@ -1,6 +1,5 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
 import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, StickyNote, Upload } from 'lucide-react';
-import { ServiceMark, serviceColor } from './serviceIcon';
 import UkDateInput from './UkDateInput';
 import { isSetmoreNoShow } from './setmoreImport';
 
@@ -31,6 +30,8 @@ type Props = {
   planOpen: boolean;
   setPlanOpen: (open: boolean) => void;
   jobs: ScheduleJob[];
+  mainService: string;
+  serviceAccent: (name: string) => string;
   waitingTotal: number;
   customerName: (job: ScheduleJob) => string;
   outcome: (job: ScheduleJob) => 'todo' | 'done' | 'paid';
@@ -171,6 +172,17 @@ export default function ScheduleBoard(props: Props) {
   const pastTotal = tally(rangeJobs.filter(job => job.date < props.today));
   const laterTotal = tally(rangeJobs.filter(job => job.date >= props.today));
   const summaryLine = (total: { count: number; amount: number }) => `${total.count} appointment${total.count === 1 ? '' : 's'} · ${props.money(total.amount)}`;
+  const extraService = (job: ScheduleJob) => {
+    const name = job.service.trim();
+    if (!name) return '';
+    if (props.mainService && name.toLowerCase() === props.mainService.trim().toLowerCase()) return '';
+    return name;
+  };
+  const extraLabel = (job: ScheduleJob) => {
+    const name = extraService(job);
+    if (!name) return null;
+    return <span className="chip-extra-service" style={{ color: props.serviceAccent(name) }}>{name}</span>;
+  };
 
   const move = (direction: -1 | 1) => {
     if (props.view === 'calendar' && props.mode === 'Month') {
@@ -201,7 +213,7 @@ export default function ScheduleBoard(props: Props) {
         <div className="schedule-title-row"><strong>{props.customerName(job)}</strong></div>
         <div className="schedule-meta">
           {job.address ? <span><MapPin size={13} />{job.address}</span> : null}
-          <span><span className="chip-service-mark" style={{ background: serviceColor(job.service) }}><ServiceMark name={job.service} size={13} onColor /></span>{job.service}</span>
+          {extraService(job) ? <span>{extraLabel(job)}</span> : null}
         </div>
         {job.notes ? <p className="board-notes">{job.notes}</p> : null}
       </div>
@@ -343,12 +355,12 @@ export default function ScheduleBoard(props: Props) {
                             key={job.id}
                             draggable
                             className={`event-chip outcome-${isSetmoreNoShow(job) ? 'paid' : props.outcome(job)}${job.missingFromSetmore ? ' is-missing' : ''}${focusedId === job.id ? ' is-notes-focus' : ''}`}
-                            title={`${job.service}${isSetmoreNoShow(job) ? ' · No-show' : job.missingFromSetmore ? ' · Not in Setmore' : ''}`}
+                            title={[extraService(job), isSetmoreNoShow(job) ? 'No-show' : job.missingFromSetmore ? 'Not in Setmore' : ''].filter(Boolean).join(' · ')}
                             onDragStart={event => { event.stopPropagation(); props.onDragStart(event, `appt:${job.id}`); }}
                             onClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                             onDoubleClick={event => { event.stopPropagation(); props.onOpenJob(job); }}
                           >
-                            <b>{job.time}</b> <span className="chip-service-mark" style={{ background: serviceColor(job.service) }} aria-label={job.service}><ServiceMark name={job.service} size={13} onColor /></span> {props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
+                            <b>{job.time}</b> {extraLabel(job)}{props.customerName(job)}{job.missingFromSetmore ? <span className="chip-missing">Not in Setmore</span> : null}
                           </div>
                         ))}
                         {dayJobs.length === 0 && !outside && <span className="no-event">Open day</span>}
@@ -394,7 +406,7 @@ export default function ScheduleBoard(props: Props) {
                   <div className="notes-window-head">
                     <div className="notes-window-open">
                       <strong>{props.customerName(job)}</strong>
-                      <span><span className="chip-service-mark" style={{ background: serviceColor(job.service) }}><ServiceMark name={job.service} size={13} onColor /></span>{rangeKind === 'day' ? props.timeRange(job) : job.time} · {job.service}</span>
+                      <span>{rangeKind === 'day' ? props.timeRange(job) : job.time}{extraService(job) ? <> · {extraLabel(job)}</> : null}</span>
                     </div>
                   </div>
                   {appointmentNote ? <p className="notes-window-note"><span>{appointmentNote}</span></p> : null}

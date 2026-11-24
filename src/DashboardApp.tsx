@@ -767,10 +767,33 @@ function readHeldSetmore(businessId:string|null):string[]{
   }catch{return [];}
 }
 function writeHeldSetmore(businessId:string|null, ids:string[]){localStorage.setItem(heldSetmoreKey(businessId), JSON.stringify(ids));}
-function customerPlanCycles(customer:Pick<Customer,'frequency'|'serviceLines'>):number[]{
-  const lines=(customer.serviceLines||[]).filter(line=>line.service&&!line.oneOff);
-  const weeks=(lines.length?lines:[{frequency:customer.frequency||6}]).map(line=>Number(line.frequency)||customer.frequency||6);
-  return [...new Set(weeks.filter(week=>(CYCLE_WEEKS as readonly number[]).includes(week)))];
+function sameServiceName(a:string,b:string){
+  return a.trim().toLowerCase()===b.trim().toLowerCase();
+}
+function mainServiceLine(customer:Pick<Customer,'service'|'serviceLines'>, mainService:string){
+  if(!mainService) return null;
+  return (customer.serviceLines||[]).find(line=>line.service&&sameServiceName(line.service,mainService))??null;
+}
+/** Countdown cycles follow the main service only. Extra services stay off this list even when they repeat. */
+function customerPlanCycles(customer:Pick<Customer,'frequency'|'service'|'serviceLines'>, mainService:string):number[]{
+  const line=mainServiceLine(customer,mainService);
+  if(line){
+    if(line.oneOff) return [];
+    const week=Number(line.frequency)||6;
+    return (CYCLE_WEEKS as readonly number[]).includes(week)?[week]:[];
+  }
+  const lines=customer.serviceLines||[];
+  if(lines.length) return [];
+  if(customer.service&&mainService&&!sameServiceName(customer.service,mainService)) return [];
+  const week=Number(customer.frequency)||6;
+  return (CYCLE_WEEKS as readonly number[]).includes(week)?[week]:[];
+}
+function customerOnMainPlan(customer:Pick<Customer,'service'|'serviceLines'>, mainService:string){
+  const line=mainServiceLine(customer,mainService);
+  if(line) return !line.oneOff;
+  const lines=customer.serviceLines||[];
+  if(lines.length) return false;
+  return !customer.service||!mainService||sameServiceName(customer.service,mainService);
 }
 function planCycleLabel(weeks:number[]){
   if(!weeks.length) return 'One-off';
@@ -1229,28 +1252,29 @@ export default function DashboardApp({ businessId, businessName, userEmail, onSi
   const jobIds=new Set(financeAppointments.map(job=>job.id));
   return invoices.filter(invoice=>ids.has(invoice.quickfileInvoiceId)||(invoice.appointmentId!=null&&jobIds.has(invoice.appointmentId)));
  },[financeAppointments,invoices]);
- const waitingFrom=(list:Appointment[])=>{
+ const mainServiceName=services.some(s=>s.name===settings.mainService)?settings.mainService:(services[0]?.name||'');
+ const waitingFrom=(list:Appointment[], mainService:string)=>{
   const today=addDays(0);
   const booked=new Set<string>();
   const lastVisit=new Map<string,string>();
   for(const appointment of list){
     if(appointment.status==='Cancelled'||isSetmoreNoShow(appointment)) continue;
+    if(mainService&&!sameServiceName(appointment.service||'',mainService)) continue;
     if(appointment.date>=today) booked.add(appointment.customerId);
     else{
       const prev=lastVisit.get(appointment.customerId);
       if(!prev||appointment.date>prev) lastVisit.set(appointment.customerId, appointment.date);
     }
   }
-  return {booked,lastVisit,customers:customers.filter(c=>!c.archived&&!booked.has(c.id))};
+  return {booked,lastVisit,customers:customers.filter(c=>!c.archived&&!booked.has(c.id)&&customerOnMainPlan(c,mainService))};
  };
- const unplannedCustomers=useMemo(()=>waitingFrom(setmoreAppointments),[customers,setmoreAppointments]);
+ const unplannedCustomers=useMemo(()=>waitingFrom(setmoreAppointments,mainServiceName),[customers,setmoreAppointments,mainServiceName]);
  const setmorePlanRows=useMemo<SetmorePlanCustomer[]>(()=>unplannedCustomers.customers.map(customer=>{
-  const cycles=customerPlanCycles(customer);
+  const cycles=customerPlanCycles(customer,mainServiceName);
   const held=heldSetmoreSet.has(customer.id);
   return {id:customer.id,name:customer.name,place:[customer.town,customer.postcode].filter(Boolean).join(' · '),cycles,cycleLabel:planCycleLabel(cycles),lastVisit:unplannedCustomers.lastVisit.get(customer.id)||null,planned:!held&&plannedSetmoreSet.has(customer.id),held};
- }),[unplannedCustomers,plannedSetmoreSet,heldSetmoreSet]);
+ }),[unplannedCustomers,plannedSetmoreSet,heldSetmoreSet,mainServiceName]);
  const planWaitingCount=setmorePlanRows.filter(customer=>!customer.held&&!customer.planned).length;
- const mainServiceName=services.some(s=>s.name===settings.mainService)?settings.mainService:(services[0]?.name||'');
  const customerMatchesSearchAndCycle=(c:Customer)=>{
   const serviceNames=customerServiceNames(c);
   const hay=(c.name+' '+c.address+' '+c.town+' '+c.postcode+' '+c.email+' '+c.phone+' '+c.phone2+' '+c.notes+' '+serviceNames.join(' ')).toLowerCase();
@@ -2667,6 +2691,8 @@ function openEditAppointment(appointment:Appointment){
     planOpen={planOpen}
     setPlanOpen={setPlanOpen}
     jobs={sourceAppointments.filter(a=>a.status!=='Cancelled').map(a=>({...a,customerNotes:customers.find(c=>c.id===a.customerId)?.notes||''}))}
+    mainService={mainServiceName}
+    serviceAccent={name=>{const index=services.findIndex(s=>sameServiceName(s.name,name));return resolveServiceColor(index>=0?services[index].color:undefined,Math.max(0,index));}}
     waitingTotal={planWaitingCount}
     customerName={job=>customerName(appointments.find(a=>a.id===job.id)?.customerId||'')}
     outcome={job=>{const appointment=appointments.find(a=>a.id===job.id);return appointment?jobOutcome(appointment):'todo';}}
