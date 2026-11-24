@@ -1,24 +1,6 @@
 /** Square Appointments (Bookings API) — read and write bookings, customers and services. */
 
 import { randomUUID } from 'node:crypto';
-import { getCACertificates, setDefaultCACertificates } from 'node:tls';
-
-/** Avast/antivirus HTTPS scanning uses a local root that browsers trust via Windows, but Node's bundled CAs do not. */
-function trustSystemCertificates() {
-  const merged = [...getCACertificates('default'), ...getCACertificates('system')];
-  if (merged.length) setDefaultCACertificates(merged);
-}
-
-let systemCasApplied = false;
-function ensureSystemCertificates() {
-  if (systemCasApplied) return;
-  systemCasApplied = true;
-  try {
-    trustSystemCertificates();
-  } catch {
-    systemCasApplied = false;
-  }
-}
 
 export type SquareEnvironment = 'production' | 'sandbox';
 
@@ -103,7 +85,6 @@ function squareError(json: any, status: number) {
 }
 
 async function squareFetch(creds: SquareCredentials, path: string, init: RequestInit = {}) {
-  ensureSystemCertificates();
   let res: Response;
   try {
     res = await fetch(`${host(creds.environment)}${path}`, {

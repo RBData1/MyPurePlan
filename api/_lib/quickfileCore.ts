@@ -1,22 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { getCACertificates, setDefaultCACertificates } from 'node:tls';
-
-/** Avast/antivirus HTTPS scanning uses a local root that browsers trust via Windows, but Node's bundled CAs do not. */
-function trustSystemCertificates() {
-  const merged = [...getCACertificates('default'), ...getCACertificates('system')];
-  if (merged.length) setDefaultCACertificates(merged);
-}
-
-let systemCasApplied = false;
-function ensureSystemCertificates() {
-  if (systemCasApplied) return;
-  systemCasApplied = true;
-  try {
-    trustSystemCertificates();
-  } catch {
-    systemCasApplied = false;
-  }
-}
 
 export type QuickFileCredentials = {
   accNumber: string;
@@ -137,7 +119,6 @@ async function quickfilePost<T = any>(methodPath: string, creds: QuickFileCreden
       Body: body,
     },
   };
-  ensureSystemCertificates();
   let res: Response;
   try {
     res = await fetch(`https://api.quickfile.co.uk/1_2/${methodPath}`, {
@@ -622,7 +603,6 @@ function restErrorMessage(json: any, text: string, status: number) {
 }
 
 async function restFetch(creds: QuickFileCredentials, method: string, path: string, body?: unknown) {
-  ensureSystemCertificates();
   const headers: Record<string, string> = {
     Accept: 'application/json',
     Authorization: restAuthorization(creds.restToken || ''),
