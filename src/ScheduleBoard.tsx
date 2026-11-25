@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, List, MapPin, Plus, RefreshCw, StickyNote, Upload } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, FileText, List, MapPin, Plus, RefreshCw, StickyNote, Upload } from 'lucide-react';
 import UkDateInput from './UkDateInput';
 import { isSetmoreNoShow } from './setmoreImport';
 
@@ -52,6 +52,7 @@ type Props = {
   copyingSetmore?: boolean;
   onCheckQuickFile: () => void;
   checkingQuickFile: boolean;
+  onInvoiceDay: () => void;
   onOpenDay: (date: string) => void;
   onOpenJob: (job: ScheduleJob) => void;
   onDragStart: (event: DragEvent, token: string) => void;
@@ -271,6 +272,7 @@ export default function ScheduleBoard(props: Props) {
           </div>
           <button type="button" className={`button secondary${props.planOpen ? ' chosen' : ''}`} onClick={() => props.setPlanOpen(true)}>To plan <span className="board-count">{props.waitingTotal}</span></button>
           <button type="button" className="button secondary" onClick={props.onCheckQuickFile} disabled={props.checkingQuickFile}><RefreshCw size={16} /> {props.checkingQuickFile ? 'Checking…' : 'Check QuickFile'}</button>
+          <button type="button" className="button secondary" onClick={props.onInvoiceDay}><FileText size={16} /> Invoice day</button>
           <button type="button" className="button secondary" onClick={props.onImport} disabled={props.importing}><Upload size={16} /> {props.importLabel}</button>
           {props.source === 'square' && props.onCopySetmore && (
             <button type="button" className="button secondary" onClick={props.onCopySetmore} disabled={props.copyingSetmore || props.importing}>

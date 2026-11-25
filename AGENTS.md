@@ -22,3 +22,32 @@ These defaults are optimized for AI coding agents (and humans) working on apps t
   needed. Always curl https://ai-gateway.vercel.sh/v1/models first; never trust model IDs from memory
 - For durable agent loops or untrusted code: use Workflow (pause/resume/state) + Sandbox; use Vercel MCP for secure infra access
 <!-- VERCEL BEST PRACTICES END -->
+
+## Tryb i model — ZAWSZE na starcie czatu
+
+ZAWSZE, jako pierwszą rzecz w nowej rozmowie (przy pierwszej wiadomości użytkownika) oraz przed każdym nowym zadaniem, wypisz blok klasyfikacji i ZATRZYMAJ SIĘ — nie wykonuj jeszcze pracy:
+
+TRYB: Code | Ask | Debug | Orchestrator | Plan
+MODEL: <nazwa modelu> | REASONING: none|low|high|xhigh|max
+POWÓD: <1 zdanie>
+
+Potem dopisz krótką rekomendację, np.: „Zalecam: Code + DeepSeek V4.1 Flash, reasoning low. Przełącz przez /models albo napisz «ok» i lecę dalej."
+
+ZASADA: Nie zaczynaj żadnej pracy, dopóki użytkownik nie potwierdzi wyboru lub nie przełączy trybu/modelu. Jedyny wyjątek: użytkownik już potwierdził w tej samej wiadomości.
+
+Zasady wyboru trybu:
+- Code: implementacja, bugfix, testy, refaktor, drobne edycje.
+- Ask: pytania, wyjaśnienia, dokumentacja — bez zmian w kodzie.
+- Debug: diagnoza błędu, analiza logów, szukanie przyczyny.
+- Orchestrator: wiele równoległych zadań / subagentów.
+- Plan: architektura, duży feature, migracje DB, refaktor wielu plików.
+
+Zasady wyboru modelu:
+- Tani (Auto Free / Auto Efficient / DeepSeek V4.1 Flash / GLM 5.3 Flash) do rutynowej pracy, reasoning none/low.
+- Mocny (Claude Opus 5.5 / GPT-6.2 Sol) tylko do Plan, trudnego Debug lub audytu, reasoning high+.
+- Zacznij tanio; eskaluj dopiero gdy tani model zawiedzie. Nigdy max do zwykłego kodu.
+
+Pozostałe zasady:
+- Modelu własnej sesji nie zmienisz sam — wypisz rekomendację; użytkownik przełącza przez /models.
+- Do subagentów (task) zawsze przekazuj najtańszy odpowiedni model.
+- Nie czytaj całych plików, gdy wystarczy wyszukiwanie; trzymaj kontekst mały.

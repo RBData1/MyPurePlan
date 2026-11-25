@@ -493,9 +493,9 @@ function PartnerShare({ title, profit, tax }: { title: string; profit: number; t
   );
 }
 
-export function FinanceTax({ payments, businessId }: { payments: { paidAt?: string | null; amount: number }[]; businessId: string | null }) {
+export function FinanceTax({ payments, businessId, defaultOpen = false }: { payments: { paidAt?: string | null; amount: number }[]; businessId: string | null; defaultOpen?: boolean }) {
   const [anchor, setAnchor] = useState(todayIso);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const year = ukTaxYear(anchor);
   const storageKey = `cs_tax_${businessId || 'local'}_${year.key}`;
   const legacyKey = `cs_tax_expenses_${businessId || 'local'}_${year.key}`;

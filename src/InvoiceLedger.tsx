@@ -2,8 +2,8 @@ import { ChevronDown, FileText, RefreshCw } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
 import { invoiceIsOverdue, type InvoiceRecord } from './invoices';
 
-export function Fold({ title, summary, extra, children }: { title: string; summary: string; extra?: ReactNode; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+export function Fold({ title, summary, extra, children, defaultOpen = false }: { title: string; summary: string; extra?: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <section className={`panel table-panel finance-fold${open ? ' is-open' : ''}`}>
       <div className="panel-heading finance-fold-head">
@@ -34,7 +34,7 @@ function dateLabel(value: string | null) {
 
 type Filter = 'open' | 'overdue' | 'paid' | 'all';
 
-export default function InvoiceLedger({ invoices, checking, onCheck }: { invoices: InvoiceRecord[]; checking?: boolean; onCheck?: () => void }) {
+export default function InvoiceLedger({ invoices, checking, onCheck, defaultOpen = false }: { invoices: InvoiceRecord[]; checking?: boolean; onCheck?: () => void; defaultOpen?: boolean }) {
   const [filter, setFilter] = useState<Filter>('open');
   const counts = useMemo(() => {
     const overdue = invoices.filter(invoice => invoiceIsOverdue(invoice));
@@ -55,6 +55,7 @@ export default function InvoiceLedger({ invoices, checking, onCheck }: { invoice
     <Fold
       title="Invoices"
       summary={`${counts.unpaid.length} open · ${money(openAmount)} · ${counts.overdue.length} overdue · ${money(overdueAmount)} · ${counts.paid.length} paid`}
+      defaultOpen={defaultOpen}
       extra={(
         <>
           {onCheck && <button type="button" className="button secondary" disabled={checking || invoices.every(invoice => invoice.status !== 'unpaid' || invoice.quickfileInvoiceId < 0 || invoice.source === 'local')} onClick={onCheck}><RefreshCw size={15} /> {checking ? 'Checking…' : 'Check QuickFile'}</button>}

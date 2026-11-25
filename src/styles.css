@@ -637,3 +637,74 @@ html{scrollbar-gutter:stable}
   .quote-print-sheet th,.quote-print-sheet td{border-bottom:1px solid #ddd;padding:8px 4px;text-align:left}
   .quote-print-sheet td:last-child,.quote-print-sheet th:last-child{text-align:right}
 }
+
+.modal-backdrop.is-behind{z-index:40}
+.day-invoice-hint{margin:0;font-size:12px;color:#5c6e86}
+.day-invoice-empty{font-size:13px;color:#8a97a9;padding:10px 2px}
+.day-invoice-lines{list-style:none;margin:0;padding:0;display:grid;gap:7px;max-height:52vh;overflow:auto}
+.day-invoice-lines li{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);border-radius:10px;background:#f7f9fc}
+.day-invoice-lines li.is-checked{border-color:#9db7e4;background:#f4f8ff}
+.day-invoice-lines li.is-linked{background:#f2f5f9}
+.day-invoice-lines li>input{width:16px;height:16px;accent-color:#316de4;flex:none}
+.day-invoice-open{display:flex;align-items:center;gap:12px;flex:1;min-width:0;border:0;background:transparent;text-align:left;padding:2px 4px;border-radius:8px}
+.day-invoice-open:hover{background:#eef4ff}
+.day-invoice-when{display:grid;gap:1px;flex:none;width:64px}
+.day-invoice-when b{font-size:12px;color:#24384f}
+.day-invoice-when small{font-size:10px;color:#8a97a9}
+.day-invoice-who{display:grid;gap:1px;min-width:0;flex:1}
+.day-invoice-who strong{font-size:12px;color:#24384f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.day-invoice-who small{font-size:11px;color:#6f7f94;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.day-invoice-state{flex:none;font-size:10px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;color:#7a8ba3;padding:4px 7px;border-radius:7px;background:#e9eef5}
+.day-invoice-lines li.is-checked .day-invoice-state{color:#2457c5;background:#dfeaff}
+.day-invoice-price{flex:none;font-size:13px;color:#1a9c77}
+.finance-headline{margin:0}
+.finance-tabs{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;margin:0 0 16px;padding:4px;border:1px solid #6e86a3;border-radius:11px;background:#fff;scrollbar-width:none}
+.finance-tabs::-webkit-scrollbar{display:none}
+.finance-tab{display:inline-flex;align-items:center;gap:8px;border:0;background:transparent;border-radius:8px;padding:9px 14px;font-family:Manrope,sans-serif;font-size:14px;font-weight:800;letter-spacing:-.2px;color:#3d4f66;white-space:nowrap;cursor:pointer}
+.finance-tab:hover{background:#f2f6fc;color:#2457c5}
+.finance-tab:focus-visible{outline:3px solid #bdd3ff;outline-offset:2px}
+.finance-tab.is-active{background:#0c1828;color:#fff}
+.finance-tab.is-dim{opacity:.55}
+.finance-tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 6px;border-radius:999px;background:#e7edf5;color:#33475f;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+.finance-tab.is-active .finance-tab-badge{background:rgba(255,255,255,.22);color:#fff}
+.finance-tab-badge.is-alert{background:#fbe3e0;color:#a5372f}
+.finance-tab.is-active .finance-tab-badge.is-alert{background:#d4534a;color:#fff}
+.finance-tab-section{margin:0 0 16px}
+.finance-tab-panel-head{padding:18px 18px 12px}
+.finance-tab-panel-head h2{font-family:Manrope,sans-serif;font-size:20px;font-weight:800;letter-spacing:-.4px;margin:0 0 4px;color:#0c1828}
+.finance-tab-panel-head p{margin:0;max-width:620px;font-size:13px;line-height:1.45;color:#3d4f66}
+.finance-tab-hint{margin:0 0 12px;font-size:12px;color:#6f7f94}
+.finance-period-stepper{display:flex;align-items:center;gap:6px;min-width:0}
+.finance-period-actions{display:flex;align-items:center;gap:8px}
+@media(max-width:1100px){
+  .finance-page .page-heading{flex-direction:column;align-items:stretch;gap:12px}
+  .finance-heading-actions{width:100%;flex-wrap:wrap;justify-content:flex-start}
+  .finance-period-nav{width:100%;flex-direction:column;align-items:stretch;gap:8px}
+  .finance-period-stepper{width:100%}
+  .finance-period-stepper .segmented{flex:1 1 auto;min-width:0}
+  .finance-period-stepper .segmented button{flex:1 1 0;min-width:0;padding:7px 4px;font-size:12px}
+  .finance-period-actions{width:100%}
+  .finance-period-actions .button{flex:1}
+  .finance-fold-head{flex-wrap:wrap}
+  .finance-fold-head .heading-actions{width:100%;padding:0 14px 12px;justify-content:flex-start;flex-wrap:wrap}
+}
+@media(max-width:720px){
+  .finance-tabs{margin-bottom:12px;position:sticky;top:0;z-index:6;-webkit-overflow-scrolling:touch}
+  .finance-tab{padding:8px 12px;font-size:13px}
+  .finance-tab-panel-head{padding:15px 14px 11px}
+  .finance-tab-panel-head h2{font-size:18px}
+  .finance-fold-toggle{padding:15px 14px}
+  .finance-pay-period{padding:0 14px 14px}
+  .finance-pay-period-controls{width:100%}
+  .finance-pay-period label{flex:1 1 140px}
+  .finance-pay-period .uk-date-field{width:100%}
+  .finance-pay-period-controls .button{flex:1 1 100%}
+  .finance-chart-card{padding:14px 14px 12px}
+  .finance-tax-body{padding:0 14px 14px}
+}
+@media(max-width:620px){
+  .finance-tab-section .table-wrap table,.finance-fold .table-wrap table{min-width:0}
+  .finance-tab-section .table-wrap th:nth-child(3),.finance-tab-section .table-wrap td:nth-child(3){display:none}
+  .finance-fold .table-wrap th:nth-child(3),.finance-fold .table-wrap td:nth-child(3){display:none}
+  .finance-fold .table-wrap th:nth-child(5),.finance-fold .table-wrap td:nth-child(5){display:none}
+}
