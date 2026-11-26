@@ -31,7 +31,7 @@ TRYB: Code | Ask | Debug | Orchestrator | Plan
 MODEL: <nazwa modelu> | REASONING: none|low|high|xhigh|max
 POWÓD: <1 zdanie>
 
-Potem dopisz krótką rekomendację, np.: „Zalecam: Code + DeepSeek V4.1 Flash, reasoning low. Przełącz przez /models albo napisz «ok» i lecę dalej."
+Potem przedstaw krótką rekomendację przez narzędzie `question` (klikalne opcje, bez wpisywania), np.: „Zalecam: Code + DeepSeek V4.1 Flash, reasoning low." Opcje: „ok — lecę dalej" (Recommended, akceptacja i start pracy), „Zmień tryb", „Zmień model". Naciśnięcie „ok" zastępuje wpisanie „ok".
 
 ZASADA: Nie zaczynaj żadnej pracy, dopóki użytkownik nie potwierdzi wyboru lub nie przełączy trybu/modelu. Jedyny wyjątek: użytkownik już potwierdził w tej samej wiadomości.
 

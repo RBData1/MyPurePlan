@@ -1,5 +1,5 @@
-import { useRef, type ReactNode } from 'react';
-import { AlertCircle, ArrowUpRight, CalendarCheck, CheckCircle2, ChevronLeft, ChevronRight, CircleDollarSign, Download, Wallet } from 'lucide-react';
+import { useRef, useState, type ReactNode } from 'react';
+import { AlertCircle, ArrowUpRight, CalendarCheck, CheckCircle2, ChevronLeft, ChevronRight, CircleDollarSign, Download, Wallet, X } from 'lucide-react';
 import FinanceCharts, { FinanceTax } from './FinanceCharts';
 import InvoiceLedger from './InvoiceLedger';
 import FinancePaidGaps from './FinancePaidGaps';
@@ -62,15 +62,21 @@ function dateLabel(value: string | null) {
   return `${String(parsed.getDate()).padStart(2, '0')}/${String(parsed.getMonth() + 1).padStart(2, '0')}/${parsed.getFullYear()}`;
 }
 
-function Stat({ icon, label, value, sub, tone }: { icon: ReactNode; label: string; value: string; sub: string; tone: string }) {
-  return (
-    <div className="stat-card">
+function Stat({ icon, label, value, sub, tone, onClick }: { icon: ReactNode; label: string; value: string; sub: string; tone: string; onClick?: () => void }) {
+  const content = (
+    <>
       <div className={`stat-icon tone-${tone}`}>{icon}</div>
       <div className="stat-copy"><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>
       <ArrowUpRight className="stat-arrow" size={15} />
-    </div>
+    </>
   );
+  if (onClick) {
+    return <button type="button" className="stat-card stat-card-clickable" onClick={onClick} aria-label={`Show ${label}`}>{content}</button>;
+  }
+  return <div className="stat-card">{content}</div>;
 }
+
+type DrillKey = 'billed' | 'collected' | 'outstanding' | 'completed';
 
 function Status({ status }: { status: Appointment['status'] }) {
   return <span className={`status status-${status.toLowerCase()}`}><i />{status}</span>;
@@ -175,6 +181,15 @@ export default function FinancePage({
   const gapsCount = findPaidAmountGaps(gapJobs, financeInvoices).length;
   const openInvoices = financeInvoices.filter(invoice => invoice.status === 'unpaid');
   const overdueCount = financeInvoices.filter(invoice => invoiceIsOverdue(invoice)).length;
+  const [drill, setDrill] = useState<DrillKey | null>(null);
+  const completedJobs = financeJobs.filter(a => a.status === 'Completed');
+  const drillSpec: Record<DrillKey, { title: string; jobs: Appointment[] }> = {
+    billed: { title: 'Billed in period', jobs: financeJobs },
+    collected: { title: 'Collected', jobs: financePaid },
+    outstanding: { title: 'Outstanding', jobs: financeUnpaid },
+    completed: { title: 'Completed jobs', jobs: completedJobs },
+  };
+  const drillJobs = drill ? drillSpec[drill] : null;
 
   const tabs: TabSpec[] = [
     { id: 'overview', label: 'Overview' },
@@ -230,10 +245,10 @@ export default function FinancePage({
       {financeTab === 'overview' && (
         <section role="tabpanel" id="finance-panel-overview" aria-labelledby="finance-tab-overview" className="finance-tab-panel">
           <div className="stats-grid">
-            <Stat icon={<CircleDollarSign size={20} />} label="Billed in period" value={money(financeBilled)} sub={`${financeJobs.length} billable jobs`} tone="blue" />
-            <Stat icon={<CheckCircle2 size={19} />} label="Collected" value={money(financeCollected)} sub={`${financePaid.length} paid`} tone="green" />
-            <Stat icon={<AlertCircle size={19} />} label="Outstanding" value={money(financeOutstanding)} sub={`${financeUnpaid.length} unpaid`} tone="amber" />
-            <Stat icon={<CalendarCheck size={19} />} label="Completed jobs" value={String(financeJobs.filter(a => a.status === 'Completed').length)} sub="Marked complete" tone="purple" />
+            <Stat icon={<CircleDollarSign size={20} />} label="Billed in period" value={money(financeBilled)} sub={`${financeJobs.length} billable jobs`} tone="blue" onClick={() => setDrill('billed')} />
+            <Stat icon={<CheckCircle2 size={19} />} label="Collected" value={money(financeCollected)} sub={`${financePaid.length} paid`} tone="green" onClick={() => setDrill('collected')} />
+            <Stat icon={<AlertCircle size={19} />} label="Outstanding" value={money(financeOutstanding)} sub={`${financeUnpaid.length} unpaid`} tone="amber" onClick={() => setDrill('outstanding')} />
+            <Stat icon={<CalendarCheck size={19} />} label="Completed jobs" value={String(completedJobs.length)} sub="Marked complete" tone="purple" onClick={() => setDrill('completed')} />
           </div>
           <FinanceCharts period={financePeriod} start={financeRange.start} end={financeRange.end} jobs={chartJobs} invoices={financeInvoices} />
         </section>
@@ -342,6 +357,39 @@ export default function FinancePage({
           <p className="finance-tab-hint">UK tax year, split between partners. Independent of the period above — use the arrows inside the card to change the tax year.</p>
           <FinanceTax payments={payments} businessId={businessId} defaultOpen />
         </section>
+      )}
+
+      {drill && drillJobs && (
+        <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setDrill(null); }}>
+          <div className="modal modal-wide" role="dialog" aria-modal="true" aria-label={drillJobs.title}>
+            <div className="modal-header">
+              <div>
+                <h2>{drillJobs.title}</h2>
+                <p>{drillJobs.jobs.length} job{drillJobs.jobs.length === 1 ? '' : 's'} · {money(drillJobs.jobs.reduce((sum, job) => sum + (Number(job.price) || 0), 0))} · {periodLabel}</p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setDrill(null)} aria-label="Close"><X size={19} /></button>
+            </div>
+            <div className="modal-form">
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Status</th><th>Amount</th></tr></thead>
+                  <tbody>
+                    {drillJobs.jobs.map(a => (
+                      <tr key={a.id}>
+                        <td><strong>{dateLabel(a.date)}</strong><small className="table-sub">{a.time}</small></td>
+                        <td><strong>{customerName(a.customerId)}</strong></td>
+                        <td><span>{a.service}</span></td>
+                        <td><Status status={a.status} /></td>
+                        <td><strong>{money(a.price)}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {drillJobs.jobs.length === 0 && <div className="success-empty"><CheckCircle2 size={20} /> No jobs in this period.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

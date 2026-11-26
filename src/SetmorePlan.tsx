@@ -151,8 +151,8 @@ export default function SetmorePlan(props: Props) {
             : 'Customers waiting for their next main-service visit. Extra services, even on a repeat cycle, do not change how soon they are due. The tick marks them as booked in Setmore. The pause parks them on hold without moving them to Past customers.'}</p>
         </div>
         <div className="heading-actions">
-          <button type="button" className={`button secondary${showHold ? ' chosen' : ''}`} aria-pressed={showHold} onClick={() => setShowHold(open => !open)}>
-            <Pause size={16} /> On hold{heldTotal ? ` · ${heldTotal}` : ''}
+          <button type="button" className={`button secondary${showHold ? ' chosen' : ''}`} aria-pressed={showHold} title={showHold ? 'Back to the plan list' : 'Show customers on hold'} onClick={() => setShowHold(open => !open)}>
+            {showHold ? <Undo2 size={16} /> : <Pause size={16} />} {showHold ? 'Back to plan' : `On hold${heldTotal ? ` · ${heldTotal}` : ''}`}
           </button>
           {props.onClose && <button type="button" className="icon-button" aria-label="Close" title="Close" onClick={props.onClose}><X size={18} /></button>}
         </div>

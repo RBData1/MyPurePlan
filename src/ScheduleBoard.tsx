@@ -171,7 +171,8 @@ export default function ScheduleBoard(props: Props) {
   const panelJobs = focusedJob ? [focusedJob] : notedJobs;
   const rangeTotal = tally(rangeJobs);
   const pastTotal = tally(rangeJobs.filter(job => job.date < props.today));
-  const laterTotal = tally(rangeJobs.filter(job => job.date >= props.today));
+  const todayTotal = tally(rangeJobs.filter(job => job.date === props.today));
+  const laterTotal = tally(rangeJobs.filter(job => job.date > props.today));
   const summaryLine = (total: { count: number; amount: number }) => `${total.count} appointment${total.count === 1 ? '' : 's'} · ${props.money(total.amount)}`;
   const extraService = (job: ScheduleJob) => {
     const name = job.service.trim();
@@ -302,7 +303,11 @@ export default function ScheduleBoard(props: Props) {
               <strong>{summaryLine(pastTotal)}</strong>
             </div>
             <div className="schedule-summary-item">
-              <span>Today and later</span>
+              <span>Today</span>
+              <strong>{summaryLine(todayTotal)}</strong>
+            </div>
+            <div className="schedule-summary-item">
+              <span>Later</span>
               <strong>{summaryLine(laterTotal)}</strong>
             </div>
           </>
@@ -315,7 +320,18 @@ export default function ScheduleBoard(props: Props) {
             <div className="schedule-list">
               {week.every(date => jobsOn(date).length === 0)
                 ? <div className="day-panel-empty">Nothing this week. Drop a customer on a day, or add an appointment.</div>
-                : week.map(date => dayBlock(date, 'No jobs'))}
+                : <>
+                    {week.includes(props.today) && (
+                      <section className="schedule-list-group">
+                        <div className="schedule-list-heading">Today</div>
+                        {dayBlock(props.today, 'No jobs')}
+                      </section>
+                    )}
+                    <section className="schedule-list-group">
+                      <div className="schedule-list-heading">Later</div>
+                      {week.filter(date => date !== props.today).map(date => dayBlock(date, 'No jobs'))}
+                    </section>
+                  </>}
             </div>
           )}
 
@@ -345,8 +361,8 @@ export default function ScheduleBoard(props: Props) {
                       className={`calendar-day ${date === props.today ? 'day-today' : ''} ${date === props.selectedDate ? 'day-selected' : ''} ${outside ? 'day-outside' : ''}`}
                       role="button"
                       tabIndex={0}
-                      onClick={() => props.onOpenDay(date)}
-                      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onOpenDay(date); } }}
+                      onClick={() => props.setSelectedDate(date)}
+                      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.setSelectedDate(date); } }}
                       onDragOver={props.onDragOver}
                       onDrop={event => props.onDropDay(event, date)}
                     >

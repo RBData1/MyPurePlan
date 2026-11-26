@@ -2123,12 +2123,12 @@ function openEditAppointment(appointment:Appointment){
     {appointment.missingFromSetmore&&<span className="job-flag flag-missing">Not in Setmore</span>}
   </span>;
  }
- function JobQuickActions({appointment}:{appointment:Appointment}){
-  const outcome=jobOutcome(appointment);
-  const invoicing=invoicingAppointmentId===appointment.id;
-  if(isSetmoreNoShow(appointment)) return <div className="job-quick-actions" onClick={e=>e.stopPropagation()}><span className="button tiny status-paid">No-show</span></div>;
-  return <div className="job-quick-actions" onClick={e=>e.stopPropagation()}>
-   {needsInvoiceLink(appointment)&&<button type="button" className="button tiny status-done" disabled={invoicing} onClick={()=>void markJobCompleted(appointment.id)}>{invoicing?'Invoicing…':'Done'}</button>}
+function JobQuickActions({appointment,hideDone=false}:{appointment:Appointment;hideDone?:boolean}){
+   const outcome=jobOutcome(appointment);
+   const invoicing=invoicingAppointmentId===appointment.id;
+   if(isSetmoreNoShow(appointment)) return <div className="job-quick-actions" onClick={e=>e.stopPropagation()}><span className="button tiny status-paid">No-show</span></div>;
+   return <div className="job-quick-actions" onClick={e=>e.stopPropagation()}>
+    {needsInvoiceLink(appointment)&&!hideDone&&<button type="button" className="button tiny status-done" disabled={invoicing} onClick={()=>void markJobCompleted(appointment.id)}>{invoicing?'Invoicing…':'Done'}</button>}
    {outcome==='done'&&!needsInvoiceLink(appointment)&&<button type="button" className="button tiny status-pay" onClick={()=>void markJobPaid(appointment)}>Pay</button>}
    {outcome==='paid'&&<span className="button tiny status-paid">Paid</span>}
   </div>;
@@ -2769,7 +2769,7 @@ function openEditAppointment(appointment:Appointment){
     onDragOver={onDayDragOver}
     onDropDay={onDayDrop}
     onDropJob={onApptDrop}
-    renderTools={job=>{const appointment=appointments.find(a=>a.id===job.id);if(!appointment)return null;return <><JobFlags appointment={appointment}/><JobQuickActions appointment={appointment}/></>;}}
+    renderTools={job=>{const appointment=appointments.find(a=>a.id===job.id);if(!appointment)return null;const hideDone=scheduleView==='calendar'&&calendarMode==='Day';return <><JobFlags appointment={appointment}/><JobQuickActions appointment={appointment} hideDone={hideDone}/></>;}}
   />}
 {page==='Quote'&&<div className="page-scroll"><WindowQuoteEstimator businessName={settings.name} businessPhone={settings.phone} quotes={windowQuotes} revisions={priceRevisions} onSave={quote=>void saveWindowQuote(quote)} onRemember={rememberWindowQuote} onForget={forgetWindowQuote} onRevise={confirmWindowPrices} /></div>}
 {page==='Customers'&&<div className="list-screen"><div className="page-heading"><div><div className="eyebrow"><Users size={14}/> CUSTOMER RELATIONSHIPS</div><h1>Customers</h1><p>Active customers are scheduled as usual. Move former clients to Past customers — they stay in your database with history.</p></div><div className="heading-actions"><button className="button secondary" onClick={openSetmoreImport} disabled={importingSetmore}><Upload size={16}/> {importingSetmore?'Importing…':'Import Setmore'}</button><button className="button secondary" onClick={()=>exportCSV(customers)}><Download size={16}/> Export CSV</button><button className="button primary" onClick={()=>openCustomerForm()}><Plus size={17}/> Add customer</button></div></div>
